@@ -1,3 +1,6 @@
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, rpc
 from lib.decorators import require_staff
@@ -72,3 +75,57 @@ def update_report(report_id):
     if status >= 400:
         return jsonify({"error": "update failed"}), status
     return jsonify(data[0] if data else {}), 200
+
+
+@bp.get("/reactions/velocity")
+@require_staff
+def yawa_velocity():
+    """Read-only view of how fast posts are picking up yawa reactions in a
+    recent window. This is a monitoring tool for staff, not a moderation
+    mechanism — it doesn't touch feed_score(), reaction_count, or a post's
+    status, and nothing here suppresses or flags a post automatically.
+    Every post keeps the same weight in the feed no matter what shows up
+    here; it's just visibility so a human can go look if they want to.
+    """
+    window_hours = request.args.get("window_hours", default=6, type=int)
+    window_hours = max(1, min(window_hours, 72))
+    since = (datetime.now(timezone.utc) - timedelta(hours=window_hours)).isoformat()
+
+    data, status = rest_request(
+        "GET", "reactions", token=g.token,
+        params={
+            "select": "post_id,created_at",
+            "type": "eq.yawa",
+            "created_at": f"gte.{since}",
+            "order": "created_at.desc",
+        },
+    )
+    if status != 200:
+        return jsonify({"error": "could not load reaction activity"}), status
+
+    counts = defaultdict(int)
+    for row in data:
+        counts[row["post_id"]] += 1
+
+    if not counts:
+        return jsonify([]), 200
+
+    post_ids = ",".join(counts.keys())
+    posts, pstatus = rest_request(
+        "GET", "posts", token=g.token,
+        params={"id": f"in.({post_ids})", "select": "id,content,author_id"},
+    )
+    posts_by_id = {p["id"]: p for p in posts} if pstatus == 200 else {}
+
+    results = [
+        {
+            "post_id": post_id,
+            "yawa_count_window": count,
+            "per_hour": round(count / window_hours, 2),
+            "content_preview": (posts_by_id.get(post_id, {}).get("content") or "")[:140],
+            "author_id": posts_by_id.get(post_id, {}).get("author_id"),
+        }
+        for post_id, count in counts.items()
+    ]
+    results.sort(key=lambda r: r["yawa_count_window"], reverse=True)
+    return jsonify(results), 200
