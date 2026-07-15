@@ -22,13 +22,19 @@ override and can't bypass RLS even if it wanted to.
    email click before a session is returned, which is the OTP-style
    friction you explicitly said not to have.
 
-3. Grab two values from **Project Settings → API**:
+3. **Run the storage migration** — `db/storage_policies.sql` creates
+   the `post-images` bucket (public read) and locks uploads so a
+   student can only write into their own folder. This is what powers
+   image posts. Run it in the SQL Editor the same way you ran
+   `schema.sql`.
+
+4. Grab two values from **Project Settings → API**:
    - `Project URL` → this is `SUPABASE_URL`
    - `anon public` key → this is `SUPABASE_ANON_KEY`
 
    You will need both in step 3 below.
 
-4. Manually promote yourself to admin so the "Verify USTED" endpoints
+5. Manually promote yourself to admin so the "Verify USTED" endpoints
    work for your account:
    ```sql
    update users set role = 'admin' where student_id_number = 'YOUR_ID_HERE';
@@ -114,9 +120,11 @@ curl https://your-app.onrender.com/api/posts/feed
 |--------|------------------------------------|-------------|-------|
 | POST   | /api/auth/signup                  | none        | open signup |
 | POST   | /api/auth/login                   | none        | |
+| POST   | /api/auth/refresh                 | none        | body: `{"refresh_token": "..."}` — silently renews an expired session |
 | GET    | /api/auth/me                      | student     | |
 | GET    | /api/posts/feed                   | none        | ranked, active posts only |
-| POST   | /api/posts                        | student     | |
+| POST   | /api/posts                        | student     | body: `{"content": "...", "image_url": "..."}` — one of the two is required |
+| POST   | /api/posts/upload-image           | student     | multipart, field `image` — returns `{"url": "..."}`, feed it into the create-post call above |
 | GET    | /api/posts/:id                    | none        | |
 | PATCH  | /api/posts/:id                    | author      | edit content, or `{"delete": true}` to soft-delete |
 | POST   | /api/posts/:id/view                | none        | |
@@ -133,3 +141,11 @@ curl https://your-app.onrender.com/api/posts/feed
 
 All authenticated routes expect `Authorization: Bearer <access_token>`
 from the login/signup response.
+
+**Staying signed in.** Supabase access tokens expire in ~1 hour. The
+frontend stores both the `access_token` and `refresh_token` from
+login/signup, and any authenticated request that comes back `401`
+triggers a silent call to `/api/auth/refresh` before retrying —
+the person using the app never sees this happen. A student stays
+signed in until they explicitly tap "Sign out" (which clears both
+tokens), not until the access token's short expiry runs out.

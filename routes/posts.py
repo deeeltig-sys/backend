@@ -1,14 +1,54 @@
+import uuid
+
 from flask import Blueprint, request, jsonify, g
-from lib.supabase_client import rest_request, rpc
+from lib.supabase_client import rest_request, rpc, storage_upload
 from lib.decorators import require_auth
 from models.post import validate_post_content
 
 bp = Blueprint("posts", __name__, url_prefix="/api/posts")
 
+MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 6MB
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
+
 
 def _bearer_token_if_present():
     header = request.headers.get("Authorization", "")
     return header.split(" ", 1)[1] if header.startswith("Bearer ") else None
+
+
+@bp.post("/upload-image")
+@require_auth
+def upload_image():
+    """Powers image posts. The file goes straight to the `post-images`
+    Supabase Storage bucket under the caller's own user id as a path
+    prefix, using the caller's own JWT — same no-service-role rule as
+    every other write in this backend. Storage RLS (db/storage_policies.sql)
+    is what actually enforces that a student can only upload into their
+    own folder; this route just shapes the path and forwards the bytes."""
+    if "image" not in request.files:
+        return jsonify({"error": "attach an image file under the 'image' field"}), 400
+
+    file = request.files["image"]
+    content_type = file.mimetype
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        return jsonify({"error": "only JPEG, PNG, or WEBP images are supported"}), 400
+
+    file_bytes = file.read()
+    if len(file_bytes) > MAX_IMAGE_BYTES:
+        return jsonify({"error": "image must be under 6MB"}), 400
+
+    extension = ALLOWED_IMAGE_TYPES[content_type]
+    path = f"{g.user_id}/{uuid.uuid4().hex}.{extension}"
+
+    data, status = storage_upload("post-images", path, file_bytes, content_type, g.token)
+    if status >= 400:
+        return jsonify({"error": "image upload failed, try again"}), status
+
+    return jsonify({"url": data["url"]}), 201
 
 
 @bp.get("/feed")
@@ -33,7 +73,9 @@ def create_post():
     content = (body.get("content") or "").strip()
     image_url = body.get("image_url")
 
-    if not validate_post_content(content):
+    if not content and not image_url:
+        return jsonify({"error": "write something or attach a photo before posting"}), 400
+    if content and not validate_post_content(content):
         return jsonify({"error": "post must be 1-2000 characters"}), 400
 
     profile, pstatus = rest_request(

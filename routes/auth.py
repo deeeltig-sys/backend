@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify, g
-from lib.supabase_client import auth_signup, auth_login, rest_request
+from lib.supabase_client import auth_signup, auth_login, auth_refresh, rest_request
 from lib.decorators import require_auth
 from models.user import is_valid_student_id
 
@@ -47,6 +47,23 @@ def login():
     data, status = auth_login(email, password)
     if status >= 400:
         return jsonify({"error": "invalid email or password"}), 401
+    return jsonify(data), 200
+
+
+@bp.post("/refresh")
+def refresh():
+    """Exchanges a refresh token for a new session — this is what lets
+    the frontend keep a student signed in indefinitely (until they
+    explicitly log out) instead of the access token's ~1hr expiry
+    silently kicking them back to the login screen."""
+    body = request.get_json(silent=True) or {}
+    refresh_token = body.get("refresh_token")
+    if not refresh_token:
+        return jsonify({"error": "refresh_token is required"}), 400
+
+    data, status = auth_refresh(refresh_token)
+    if status >= 400:
+        return jsonify({"error": "session could not be renewed, sign in again"}), 401
     return jsonify(data), 200
 
 
