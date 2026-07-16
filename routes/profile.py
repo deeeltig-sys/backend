@@ -1,8 +1,17 @@
+import uuid
+
 from flask import Blueprint, request, jsonify, g
-from lib.supabase_client import rest_request
+from lib.supabase_client import rest_request, storage_upload
 from lib.decorators import require_auth
 
 bp = Blueprint("profile", __name__, url_prefix="/api/profile")
+
+MAX_AVATAR_BYTES = 4 * 1024 * 1024  # 4MB — smaller cap than post images, it's a thumbnail
+ALLOWED_AVATAR_TYPES = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
 
 
 @bp.get("/<user_id>")
@@ -11,6 +20,53 @@ def get_profile(user_id):
     if status != 200 or not data:
         return jsonify({"error": "user not found"}), 404
     return jsonify(data[0]), 200
+
+
+@bp.post("/upload-avatar")
+@require_auth
+def upload_avatar():
+    """Uploads to the `avatars` bucket under the caller's own folder,
+    then immediately writes the resulting URL onto their own users
+    row. Two Supabase calls (storage, then a table update) rather
+    than one, but it means the frontend gets a single request that
+    returns the finished profile — no separate 'now call updateMe'
+    step to remember."""
+    if "avatar" not in request.files:
+        return jsonify({"error": "attach an image file under the 'avatar' field"}), 400
+
+    file = request.files["avatar"]
+    content_type = file.mimetype
+    if content_type not in ALLOWED_AVATAR_TYPES:
+        return jsonify({"error": "only JPEG, PNG, or WEBP images are supported"}), 400
+
+    file_bytes = file.read()
+    if len(file_bytes) > MAX_AVATAR_BYTES:
+        return jsonify({"error": "image must be under 4MB"}), 400
+
+    extension = ALLOWED_AVATAR_TYPES[content_type]
+    # Fixed filename per user (not a fresh uuid each time) so a
+    # re-upload overwrites the old avatar instead of orphaning it in
+    # storage — the update policy in avatar_storage_policies.sql
+    # exists specifically to allow this overwrite.
+    path = f"{g.user_id}/avatar.{extension}"
+
+    upload_data, status = storage_upload("avatars", path, file_bytes, content_type, g.token)
+    if status >= 400:
+        return jsonify({"error": "avatar upload failed, try again"}), status
+
+    # Cache-bust the URL so the new photo shows immediately instead of
+    # the browser/CDN serving the previous image at the same path.
+    avatar_url = f"{upload_data['url']}?v={uuid.uuid4().hex[:8]}"
+
+    updated, ustatus = rest_request(
+        "PATCH", "users", token=g.token,
+        params={"id": f"eq.{g.user_id}"}, json_body={"avatar_url": avatar_url},
+        prefer="return=representation",
+    )
+    if ustatus >= 400 or not updated:
+        return jsonify({"error": "avatar uploaded but profile update failed"}), 500
+
+    return jsonify(updated[0]), 200
 
 
 @bp.patch("/me")

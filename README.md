@@ -22,11 +22,11 @@ override and can't bypass RLS even if it wanted to.
    email click before a session is returned, which is the OTP-style
    friction you explicitly said not to have.
 
-3. **Run the storage migration** — `db/storage_policies.sql` creates
-   the `post-images` bucket (public read) and locks uploads so a
-   student can only write into their own folder. This is what powers
-   image posts. Run it in the SQL Editor the same way you ran
-   `schema.sql`.
+3. **Run the storage migrations** — `db/storage_policies.sql` creates
+   the `post-images` bucket, and `db/avatar_storage_policies.sql`
+   creates the `avatars` bucket, both public-read with per-user
+   folder write permissions. Run both in the SQL Editor the same way
+   you ran `schema.sql`.
 
 4. Grab two values from **Project Settings → API**:
    - `Project URL` → this is `SUPABASE_URL`
@@ -133,6 +133,7 @@ curl https://your-app.onrender.com/api/posts/feed
 | DELETE | /api/posts/:id/reactions           | student     | |
 | GET    | /api/profile/:id                   | none        | |
 | PATCH  | /api/profile/me                    | student     | `full_name`, `avatar_url` |
+| POST   | /api/profile/upload-avatar         | student     | multipart, field `avatar` — uploads and saves in one call, returns the updated profile |
 | GET    | /api/admin/users                   | staff       | `?verified=false` for the pending queue |
 | POST   | /api/admin/users/:id/verify         | staff       | the "Verify USTED" button |
 | POST   | /api/admin/users/:id/unverify       | staff       | |
