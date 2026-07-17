@@ -12,7 +12,7 @@ bp = Blueprint("app_meta", __name__, url_prefix="/api/app")
 # no other way to learn a newer APK exists.
 LATEST_VERSION_CODE = 1
 LATEST_VERSION_NAME = "1.0"
-APK_URL = "https://example.com/campmeet-latest.apk"  # TODO: point at wherever the APK is actually hosted
+APK_URL = "https://getcamp.netlify.app"  # landing page — has the APK download link on it
 # Any installed versionCode below this is blocked with a mandatory
 # update screen rather than a dismissible banner. Leave at 0 (never
 # force) until there's a real reason to cut off an old build.
