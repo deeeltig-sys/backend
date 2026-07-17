@@ -3,6 +3,7 @@ import uuid
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, storage_upload
 from lib.decorators import require_auth
+from models.user import sanitize_social_links
 
 bp = Blueprint("profile", __name__, url_prefix="/api/profile")
 
@@ -73,8 +74,14 @@ def upload_avatar():
 @require_auth
 def update_own_profile():
     body = request.get_json(silent=True) or {}
-    allowed_fields = {"full_name", "avatar_url"}
+    allowed_fields = {"full_name", "avatar_url", "social_links"}
     updates = {k: v for k, v in body.items() if k in allowed_fields}
+
+    if "social_links" in updates:
+        # Never trust the raw payload straight into Postgres — strip
+        # unknown platform keys and anything that isn't a clean handle.
+        updates["social_links"] = sanitize_social_links(updates["social_links"])
+
     if not updates:
         return jsonify({"error": "nothing to update"}), 400
 

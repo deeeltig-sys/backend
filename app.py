@@ -4,8 +4,10 @@ from config import Config
 from routes.auth import bp as auth_bp
 from routes.posts import bp as posts_bp
 from routes.reactions import bp as reactions_bp
+from routes.comments import bp as comments_bp
 from routes.profile import bp as profile_bp
 from routes.admin import bp as admin_bp
+from routes.app_meta import bp as app_meta_bp
 
 
 def create_app():
@@ -16,8 +18,10 @@ def create_app():
     app.register_blueprint(auth_bp)
     app.register_blueprint(posts_bp)
     app.register_blueprint(reactions_bp)
+    app.register_blueprint(comments_bp)
     app.register_blueprint(profile_bp)
     app.register_blueprint(admin_bp)
+    app.register_blueprint(app_meta_bp)
 
     @app.get("/")
     def health():
