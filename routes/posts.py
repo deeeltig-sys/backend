@@ -20,6 +20,27 @@ def _bearer_token_if_present():
     return header.split(" ", 1)[1] if header.startswith("Bearer ") else None
 
 
+def _attach_user_reactions(posts, token):
+    """Mutates `posts` in place, adding `user_reaction` (or None) to each
+    row. Without this the frontend has no way to know "you already
+    reacted to this one" -- the feed/search views themselves can't carry
+    that, since it's specific to whoever is asking, not the post itself.
+    Silently does nothing if there's no token (anonymous browsing) or no
+    posts to annotate."""
+    if not token or not posts:
+        return
+    post_ids = ",".join(p["id"] for p in posts)
+    reactions, status = rest_request(
+        "GET", "reactions", token=token,
+        params={"post_id": f"in.({post_ids})", "select": "post_id,type"},
+    )
+    if status != 200 or not isinstance(reactions, list):
+        return
+    by_post = {r["post_id"]: r["type"] for r in reactions}
+    for p in posts:
+        p["user_reaction"] = by_post.get(p["id"])
+
+
 @bp.post("/upload-image")
 @require_auth
 def upload_image():
@@ -55,7 +76,11 @@ def upload_image():
 def feed():
     """Reads from the `feed` view — active posts only, ranked by
     feed_score() (views + reactions + search_hits, equal weight for
-    now — see db/schema.sql)."""
+    now — see db/schema.sql). The view itself now also joins author
+    name/avatar/verified (db/avatar_and_search_migration.sql); this
+    route additionally stamps each post with the caller's own
+    user_reaction so the frontend can highlight it, when a token
+    is present."""
     limit = request.args.get("limit", 30)
     offset = request.args.get("offset", 0)
     data, status = rest_request(
@@ -63,6 +88,34 @@ def feed():
     )
     if status != 200:
         return jsonify({"error": "could not load feed"}), status
+
+    _attach_user_reactions(data, _bearer_token_if_present())
+    return jsonify(data), 200
+
+
+@bp.get("/search")
+def search_posts():
+    """Simple ILIKE search over post content, scoped to the same
+    active-only `feed` view so results carry author info and
+    reaction/view counts identically to the main feed. Not a
+    full-text-search ranking yet -- fine at current volume, backed
+    by a trigram index (db/avatar_and_search_migration.sql) so it
+    stays fast as content grows."""
+    query = (request.args.get("q") or "").strip()
+    if not query:
+        return jsonify([]), 200
+    if len(query) < 2:
+        return jsonify({"error": "type at least 2 characters to search"}), 400
+
+    limit = request.args.get("limit", 30)
+    data, status = rest_request(
+        "GET", "feed",
+        params={"select": "*", "content": f"ilike.*{query}*", "limit": limit},
+    )
+    if status != 200:
+        return jsonify({"error": "search failed"}), status
+
+    _attach_user_reactions(data, _bearer_token_if_present())
     return jsonify(data), 200
 
 
