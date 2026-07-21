@@ -1,9 +1,5 @@
 import re
 
-# Mirrors the check constraint in db/schema.sql — validate client-side
-# too so bad input never reaches Postgres in the first place.
-STUDENT_ID_PATTERN = re.compile(r"^52\d{8}$")
-
 # Matches PLATFORM_URL_TEMPLATES on the frontend (Profile.jsx) exactly —
 # any key outside this set is silently dropped, not just for new/unknown
 # platforms but as the actual security boundary: these are the only
@@ -20,10 +16,6 @@ MAX_HANDLE_LENGTH = 100
 # check, not the only one: it stops someone from turning their own
 # "Instagram link" into a link to somewhere else entirely.
 _INVALID_HANDLE_CHARS = re.compile(r"[\s/\\\"'<>]")
-
-
-def is_valid_student_id(student_id: str) -> bool:
-    return bool(STUDENT_ID_PATTERN.match(student_id or ""))
 
 
 def sanitize_social_links(raw) -> dict:

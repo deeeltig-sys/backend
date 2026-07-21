@@ -8,6 +8,9 @@ class Config:
     SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
     SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
     DEFAULT_UNIVERSITY_CODE = os.environ.get("DEFAULT_UNIVERSITY_CODE", "USTED")
+    PASSWORD_RESET_REDIRECT_URL = os.environ.get(
+        "PASSWORD_RESET_REDIRECT_URL", "https://getcamp.netlify.app/reset-password.html"
+    )
     CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
     FLASK_ENV = os.environ.get("FLASK_ENV", "production")
 

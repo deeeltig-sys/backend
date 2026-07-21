@@ -73,7 +73,7 @@ def rpc(function_name: str, token: str | None = None, payload: dict | None = Non
 # frontend shape stays a direct mirror of Supabase's own response.
 # ---------------------------------------------------------------
 
-def auth_signup(email: str, password: str, full_name: str, student_id_number: str):
+def auth_signup(email: str, password: str, full_name: str, university_id: str = None, university_name: str = None):
     url = f"{Config.SUPABASE_URL}/auth/v1/signup"
     response = requests.post(
         url,
@@ -83,7 +83,8 @@ def auth_signup(email: str, password: str, full_name: str, student_id_number: st
             "password": password,
             "data": {
                 "full_name": full_name,
-                "student_id_number": student_id_number,
+                "university_id": university_id,
+                "university_name": university_name,
             },
         },
         timeout=REQUEST_TIMEOUT,
@@ -125,6 +126,49 @@ def auth_get_user(token: str):
     itself, never just decoded and trusted client-side."""
     url = f"{Config.SUPABASE_URL}/auth/v1/user"
     response = requests.get(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
+    return _parse(response)
+
+
+def auth_recover(email: str):
+    """Triggers GoTrue's password-recovery email. The redirect_to here
+    is what points the emailed link at reset-password.html on the
+    Netlify site rather than wherever the Supabase project's default
+    site URL happens to be set — worth double-checking that page is
+    actually deployed there before relying on this."""
+    url = f"{Config.SUPABASE_URL}/auth/v1/recover"
+    response = requests.post(
+        url,
+        headers=_headers(),
+        json={"email": email, "redirect_to": Config.PASSWORD_RESET_REDIRECT_URL},
+        timeout=REQUEST_TIMEOUT,
+    )
+    return _parse(response)
+
+
+def auth_update_password(recovery_token: str, new_password: str):
+    """Sets a new password using the short-lived token from a clicked
+    recovery link — NOT the person's normal session token. GoTrue
+    treats this the same as any other 'update the current user'
+    call, just authenticated with the recovery token instead of a
+    login session."""
+    url = f"{Config.SUPABASE_URL}/auth/v1/user"
+    response = requests.put(
+        url,
+        headers=_headers(recovery_token),
+        json={"password": new_password},
+        timeout=REQUEST_TIMEOUT,
+    )
+    return _parse(response)
+
+
+def auth_delete_self(token: str):
+    """Self-service account deletion via the caller's own session
+    token. This requires GoTrue's 'allow users to delete their own
+    account' setting to be enabled in the Supabase project — if it
+    isn't, this call fails and routes/auth.py falls back to
+    anonymizing the profile instead of hard-erroring the request."""
+    url = f"{Config.SUPABASE_URL}/auth/v1/user"
+    response = requests.delete(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
     return _parse(response)
 
 

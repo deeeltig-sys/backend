@@ -41,6 +41,29 @@ def _attach_user_reactions(posts, token):
         p["user_reaction"] = by_post.get(p["id"])
 
 
+def _blocked_author_ids(token):
+    """Posts from anyone the caller has blocked, filtered out of
+    whatever feed/search they're looking at. Only reads the caller's
+    own block rows (RLS only allows that anyway) — there's no way,
+    by design, to discover who has blocked *you*."""
+    if not token:
+        return set()
+    data, status = rest_request(
+        "GET", "blocks", token=token,
+        params={"select": "blocked_id"},
+    )
+    if status != 200 or not isinstance(data, list):
+        return set()
+    return {row["blocked_id"] for row in data}
+
+
+def _filter_blocked(posts, token):
+    blocked = _blocked_author_ids(token)
+    if not blocked:
+        return posts
+    return [p for p in posts if p.get("author_id") not in blocked]
+
+
 @bp.post("/upload-image")
 @require_auth
 def upload_image():
@@ -89,7 +112,9 @@ def feed():
     if status != 200:
         return jsonify({"error": "could not load feed"}), status
 
-    _attach_user_reactions(data, _bearer_token_if_present())
+    token = _bearer_token_if_present()
+    data = _filter_blocked(data, token)
+    _attach_user_reactions(data, token)
     return jsonify(data), 200
 
 
@@ -115,7 +140,9 @@ def search_posts():
     if status != 200:
         return jsonify({"error": "search failed"}), status
 
-    _attach_user_reactions(data, _bearer_token_if_present())
+    token = _bearer_token_if_present()
+    data = _filter_blocked(data, token)
+    _attach_user_reactions(data, token)
     return jsonify(data), 200
 
 

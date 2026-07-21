@@ -42,6 +42,26 @@ def require_auth(fn):
     return wrapper
 
 
+def optional_auth(fn):
+    """Like require_auth, but never blocks the request — sets
+    g.user_id/g.token if a valid bearer token is present, otherwise
+    leaves them as None. For endpoints that are public but show extra
+    detail (e.g. is_following) to a signed-in caller."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        token = _extract_bearer_token()
+        g.token = None
+        g.user_id = None
+        if token:
+            user, status = auth_get_user(token)
+            if status == 200 and user and user.get("id"):
+                g.token = token
+                g.user_id = user["id"]
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
 def require_staff(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):

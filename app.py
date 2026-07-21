@@ -8,6 +8,14 @@ from routes.comments import bp as comments_bp
 from routes.profile import bp as profile_bp
 from routes.admin import bp as admin_bp
 from routes.app_meta import bp as app_meta_bp
+from routes.universities import bp as universities_bp
+from routes.reports import bp as reports_bp
+from routes.follows import bp as follows_bp
+from routes.users import bp as users_bp
+from routes.notifications import bp as notifications_bp
+from routes.messages import bp as messages_bp
+from routes.blocks import bp as blocks_bp
+from routes.stats import bp as stats_bp
 
 
 def create_app():
@@ -22,6 +30,14 @@ def create_app():
     app.register_blueprint(profile_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(app_meta_bp)
+    app.register_blueprint(universities_bp)
+    app.register_blueprint(reports_bp)
+    app.register_blueprint(follows_bp)
+    app.register_blueprint(users_bp)
+    app.register_blueprint(notifications_bp)
+    app.register_blueprint(messages_bp)
+    app.register_blueprint(blocks_bp)
+    app.register_blueprint(stats_bp)
 
     @app.get("/")
     def health():
