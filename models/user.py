@@ -10,6 +10,7 @@ SOCIAL_PLATFORMS = {
     "x", "linkedin", "telegram", "youtube", "threads", "discord",
 }
 MAX_HANDLE_LENGTH = 100
+MAX_BIO_LENGTH = 280  # matches the users_bio_length check constraint in the DB
 # Handles are templated into a fixed URL server-side (e.g.
 # https://instagram.com/{handle}) — a handle should never itself contain
 # a scheme, slash, backslash, quote, or whitespace. This is a defensive
@@ -44,6 +45,20 @@ def sanitize_social_links(raw) -> dict:
     return cleaned
 
 
+def sanitize_bio(raw) -> str | None:
+    """Trims and caps a bio string. Empty string is normalized to None
+    so 'clear my bio' round-trips as null rather than an empty string
+    sitting in the DB forever."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return None
+    trimmed = raw.strip()
+    if not trimmed:
+        return None
+    return trimmed[:MAX_BIO_LENGTH]
+
+
 def public_user_fields(row: dict) -> dict:
     """Shape a users row for anything visible to other students —
     the (USTED) mark is derived here, not stored as its own column."""
@@ -56,4 +71,5 @@ def public_user_fields(row: dict) -> dict:
         "role": row.get("role"),
         "created_at": row.get("created_at"),
         "social_links": row.get("social_links") or {},
+        "bio": row.get("bio"),
     }
