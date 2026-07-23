@@ -3,6 +3,7 @@ import uuid
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, rpc, storage_upload
 from lib.decorators import require_auth
+from lib.watermark import apply_watermark
 from models.post import validate_post_content
 
 bp = Blueprint("posts", __name__, url_prefix="/api/posts")
@@ -84,6 +85,11 @@ def upload_image():
     file_bytes = file.read()
     if len(file_bytes) > MAX_IMAGE_BYTES:
         return jsonify({"error": "image must be under 6MB"}), 400
+
+    # Stamp before upload — every post image gets the mark, not just an
+    # opt-in, so it's consistent across the whole platform. Uses the
+    # original bytes as a fallback if watermarking hits any error.
+    file_bytes = apply_watermark(file_bytes, content_type)
 
     extension = ALLOWED_IMAGE_TYPES[content_type]
     path = f"{g.user_id}/{uuid.uuid4().hex}.{extension}"
@@ -236,3 +242,27 @@ def register_search_hit(post_id):
     if status >= 400:
         return jsonify({"error": "could not register search hit"}), status
     return jsonify({"ok": True}), 200
+
+
+@bp.get("/by-user/<user_id>")
+def posts_by_user(user_id):
+    """Powers the profile grid — every active post from one author,
+    newest first. Reuses the same `feed` view as the main feed (so
+    blocking rules and author info stay consistent), just filtered
+    to one author_id instead of ranked across everyone."""
+    limit = request.args.get("limit", 60)
+    offset = request.args.get("offset", 0)
+    data, status = rest_request(
+        "GET", "feed",
+        params={
+            "select": "*", "author_id": f"eq.{user_id}",
+            "order": "created_at.desc", "limit": limit, "offset": offset,
+        },
+    )
+    if status != 200:
+        return jsonify({"error": "could not load posts"}), status
+
+    token = _bearer_token_if_present()
+    data = _filter_blocked(data, token)
+    _attach_user_reactions(data, token)
+    return jsonify(data), 200

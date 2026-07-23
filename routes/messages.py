@@ -34,13 +34,16 @@ def list_conversations():
         return jsonify({"error": "could not load conversations"}), status
 
     result = []
+    conv_ids = []
     for conv in data or []:
         other = _other_participant(conv, g.user_id)
+        conv_ids.append(conv["id"])
         result.append({
             "id": conv["id"],
             "status": conv["status"],
             "is_request": conv["status"] == "pending" and conv["initiated_by"] != g.user_id,
             "last_message_at": conv["last_message_at"],
+            "last_message_preview": None,
             "other_user": {
                 "id": other.get("id"),
                 "full_name": other.get("full_name"),
@@ -48,6 +51,35 @@ def list_conversations():
                 "verified": other.get("verified_at") is not None,
             },
         })
+
+    # One extra query for a preview snippet per conversation — PostgREST
+    # has no "latest row per group" in a single call, so this pulls
+    # recent messages across all the caller's conversations and keeps
+    # only the newest per conversation_id in Python.
+    if conv_ids:
+        msgs, msg_status = rest_request(
+            "GET", "messages", token=g.token,
+            params={
+                "conversation_id": f"in.({','.join(conv_ids)})",
+                "select": "conversation_id,content,sender_id,created_at",
+                "order": "created_at.desc",
+                "limit": len(conv_ids) * 5,  # generous headroom, trimmed to newest-per-conversation below
+            },
+        )
+        if msg_status == 200:
+            seen = set()
+            latest_by_conv = {}
+            for m in msgs or []:
+                cid = m["conversation_id"]
+                if cid not in seen:
+                    seen.add(cid)
+                    latest_by_conv[cid] = m
+            for row in result:
+                m = latest_by_conv.get(row["id"])
+                if m:
+                    prefix = "You: " if m["sender_id"] == g.user_id else ""
+                    snippet = m["content"][:60] + ("…" if len(m["content"]) > 60 else "")
+                    row["last_message_preview"] = prefix + snippet
     return jsonify(result), 200
 
 
