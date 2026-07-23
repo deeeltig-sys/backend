@@ -242,27 +242,3 @@ def register_search_hit(post_id):
     if status >= 400:
         return jsonify({"error": "could not register search hit"}), status
     return jsonify({"ok": True}), 200
-
-
-@bp.get("/by-user/<user_id>")
-def posts_by_user(user_id):
-    """Powers the profile grid — every active post from one author,
-    newest first. Reuses the same `feed` view as the main feed (so
-    blocking rules and author info stay consistent), just filtered
-    to one author_id instead of ranked across everyone."""
-    limit = request.args.get("limit", 60)
-    offset = request.args.get("offset", 0)
-    data, status = rest_request(
-        "GET", "feed",
-        params={
-            "select": "*", "author_id": f"eq.{user_id}",
-            "order": "created_at.desc", "limit": limit, "offset": offset,
-        },
-    )
-    if status != 200:
-        return jsonify({"error": "could not load posts"}), status
-
-    token = _bearer_token_if_present()
-    data = _filter_blocked(data, token)
-    _attach_user_reactions(data, token)
-    return jsonify(data), 200
