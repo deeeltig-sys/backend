@@ -98,7 +98,7 @@ def upload_avatar():
 @require_auth
 def update_own_profile():
     body = request.get_json(silent=True) or {}
-    allowed_fields = {"full_name", "avatar_url", "social_links", "bio", "level_of_study"}
+    allowed_fields = {"full_name", "avatar_url", "social_links", "bio", "level_of_study", "default_wallpaper", "default_wallpaper_url"}
     updates = {k: v for k, v in body.items() if k in allowed_fields}
 
     if "social_links" in updates:
@@ -111,6 +111,9 @@ def update_own_profile():
 
     if "level_of_study" in updates:
         updates["level_of_study"] = sanitize_level_of_study(updates["level_of_study"])
+
+    if "default_wallpaper" in updates and updates["default_wallpaper"] not in {"black", "white", "system", "cream", "green", "custom"}:
+        return jsonify({"error": "invalid default_wallpaper value"}), 400
 
     if not updates:
         return jsonify({"error": "nothing to update"}), 400
