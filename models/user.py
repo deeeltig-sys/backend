@@ -59,6 +59,16 @@ def sanitize_bio(raw) -> str | None:
     return trimmed[:MAX_BIO_LENGTH]
 
 
+MAX_LEVEL_LENGTH = 40  # matches the users_level_of_study_length check constraint
+
+
+def sanitize_level_of_study(raw) -> str | None:
+    if raw is None or not isinstance(raw, str):
+        return None
+    trimmed = raw.strip()
+    return trimmed[:MAX_LEVEL_LENGTH] if trimmed else None
+
+
 def public_user_fields(row: dict) -> dict:
     """Shape a users row for anything visible to other students —
     the (USTED) mark is derived here, not stored as its own column."""
@@ -72,4 +82,5 @@ def public_user_fields(row: dict) -> dict:
         "created_at": row.get("created_at"),
         "social_links": row.get("social_links") or {},
         "bio": row.get("bio"),
+        "level_of_study": row.get("level_of_study"),
     }
