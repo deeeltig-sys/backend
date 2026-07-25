@@ -36,6 +36,7 @@ def get_profile(user_id):
     result["following_count"] = row.get("following_count", 0)
     result["university_name"] = (row.get("university") or {}).get("name")
     result["is_following"] = False
+    result["friend_status"] = "none"  # none | pending_sent | pending_received | friends
 
     if g.user_id and g.user_id != user_id:
         follow_data, fstatus = rest_request(
@@ -43,6 +44,25 @@ def get_profile(user_id):
             params={"follower_id": f"eq.{g.user_id}", "followed_id": f"eq.{user_id}", "select": "follower_id"},
         )
         result["is_following"] = fstatus == 200 and bool(follow_data)
+
+        low, high = sorted([g.user_id, user_id])
+        friendship, frstatus = rest_request(
+            "GET", "friendships", token=g.token,
+            params={"user_a": f"eq.{low}", "user_b": f"eq.{high}", "select": "user_a"},
+        )
+        if frstatus == 200 and friendship:
+            result["friend_status"] = "friends"
+        else:
+            req_data, rstatus = rest_request(
+                "GET", "friend_requests", token=g.token,
+                params={
+                    "or": f"(and(sender_id.eq.{g.user_id},receiver_id.eq.{user_id}),and(sender_id.eq.{user_id},receiver_id.eq.{g.user_id}))",
+                    "status": "eq.pending", "select": "id,sender_id",
+                },
+            )
+            if rstatus == 200 and req_data:
+                result["friend_status"] = "pending_sent" if req_data[0]["sender_id"] == g.user_id else "pending_received"
+                result["friend_request_id"] = req_data[0]["id"]
 
     return jsonify(result), 200
 
@@ -98,7 +118,7 @@ def upload_avatar():
 @require_auth
 def update_own_profile():
     body = request.get_json(silent=True) or {}
-    allowed_fields = {"full_name", "avatar_url", "social_links", "bio", "level_of_study"}
+    allowed_fields = {"full_name", "avatar_url", "social_links", "bio", "level_of_study", "default_wallpaper", "default_wallpaper_url"}
     updates = {k: v for k, v in body.items() if k in allowed_fields}
 
     if "social_links" in updates:
@@ -111,6 +131,9 @@ def update_own_profile():
 
     if "level_of_study" in updates:
         updates["level_of_study"] = sanitize_level_of_study(updates["level_of_study"])
+
+    if "default_wallpaper" in updates and updates["default_wallpaper"] not in {"black", "white", "system", "cream", "green", "custom"}:
+        return jsonify({"error": "invalid default_wallpaper value"}), 400
 
     if not updates:
         return jsonify({"error": "nothing to update"}), 400

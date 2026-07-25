@@ -55,9 +55,10 @@ def suggested_users():
 
     me, status = rest_request(
         "GET", "users", token=g.token,
-        params={"select": "university_id", "id": f"eq.{g.user_id}"},
+        params={"select": "university_id,level_of_study", "id": f"eq.{g.user_id}"},
     )
     university_id = (me or [{}])[0].get("university_id") if status == 200 else None
+    level_of_study = (me or [{}])[0].get("level_of_study") if status == 200 else None
 
     def fetch(params):
         data, status = rest_request("GET", "users", token=g.token, params=params)
@@ -69,8 +70,19 @@ def suggested_users():
             "select": "*", "id": id_filter, "university_id": f"eq.{university_id}",
             "order": "follower_count.desc", "limit": limit,
         })
+    if len(results) < limit and level_of_study:
+        # Tier 2 — "level 300s vibing with 300s from other institutes":
+        # once same-campus runs out, same academic level ANYWHERE beats
+        # a random stranger. This is what makes the multi-university
+        # network actually feel connected instead of N separate silos.
+        seen = exclude_ids | {r["id"] for r in results}
+        same_level = fetch({
+            "select": "*", "id": f"not.in.({','.join(seen)})", "level_of_study": f"eq.{level_of_study}",
+            "order": "follower_count.desc", "limit": limit - len(results),
+        })
+        results += same_level
     if len(results) < limit:
-        # Top up with anyone else once same-university runs out — better
+        # Top up with anyone else once both tiers run out — better
         # to show *someone* than an empty carousel on a small campus.
         seen = exclude_ids | {r["id"] for r in results}
         topup = fetch({

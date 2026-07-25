@@ -2,7 +2,7 @@ import uuid
 
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, rpc, storage_upload
-from lib.decorators import require_auth
+from lib.decorators import require_auth, optional_auth
 from lib.watermark import apply_watermark
 from models.post import validate_post_content
 
@@ -102,25 +102,44 @@ def upload_image():
 
 
 @bp.get("/feed")
+@optional_auth
 def feed():
     """Reads from the `feed` view — active posts only, ranked by
-    feed_score() (views + reactions + search_hits, equal weight for
-    now — see db/schema.sql). The view itself now also joins author
-    name/avatar/verified (db/avatar_and_search_migration.sql); this
-    route additionally stamps each post with the caller's own
-    user_reaction so the frontend can highlight it, when a token
-    is present."""
+    weighted-random sampling over feed_score() (see
+    db/feed_randomization_migration.sql). The view itself also joins
+    author name/avatar/verified; this route additionally stamps each
+    post with the caller's own user_reaction when a token is present.
+
+    `scope` param: 'campus' (default) shows only posts from the
+    caller's own university — this is the actual multi-university
+    architecture decision, not just cosmetic: without it, a new
+    university's students see themselves drowned out in a single
+    global feed dominated by whichever campus onboarded first. 'campus'
+    keeps each university feeling alive on its own from day one.
+    'national' shows everyone, unscoped — an explicit opt-in via the
+    toggle in Feed.jsx. Unauthenticated requests can't be scoped to a
+    campus we don't know, so they always get 'national'."""
     limit = request.args.get("limit", 30)
     offset = request.args.get("offset", 0)
-    data, status = rest_request(
-        "GET", "feed", params={"select": "*", "limit": limit, "offset": offset},
-    )
+    scope = request.args.get("scope", "campus")
+
+    params = {"select": "*", "limit": limit, "offset": offset}
+
+    if scope == "campus" and g.user_id:
+        me, me_status = rest_request(
+            "GET", "users", token=g.token,
+            params={"select": "university_id", "id": f"eq.{g.user_id}"},
+        )
+        university_id = (me or [{}])[0].get("university_id") if me_status == 200 else None
+        if university_id:
+            params["university_id"] = f"eq.{university_id}"
+
+    data, status = rest_request("GET", "feed", params=params)
     if status != 200:
         return jsonify({"error": "could not load feed"}), status
 
-    token = _bearer_token_if_present()
-    data = _filter_blocked(data, token)
-    _attach_user_reactions(data, token)
+    data = _filter_blocked(data, g.token)
+    _attach_user_reactions(data, g.token)
     return jsonify(data), 200
 
 
@@ -242,3 +261,27 @@ def register_search_hit(post_id):
     if status >= 400:
         return jsonify({"error": "could not register search hit"}), status
     return jsonify({"ok": True}), 200
+
+
+@bp.get("/by-user/<user_id>")
+def posts_by_user(user_id):
+    """Powers the profile grid — every active post from one author,
+    newest first. Reuses the same `feed` view as the main feed (so
+    blocking rules and author info stay consistent), just filtered
+    to one author_id instead of ranked across everyone."""
+    limit = request.args.get("limit", 60)
+    offset = request.args.get("offset", 0)
+    data, status = rest_request(
+        "GET", "feed",
+        params={
+            "select": "*", "author_id": f"eq.{user_id}",
+            "order": "created_at.desc", "limit": limit, "offset": offset,
+        },
+    )
+    if status != 200:
+        return jsonify({"error": "could not load posts"}), status
+
+    token = _bearer_token_if_present()
+    data = _filter_blocked(data, token)
+    _attach_user_reactions(data, token)
+    return jsonify(data), 200

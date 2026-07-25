@@ -17,6 +17,7 @@ from routes.messages import bp as messages_bp
 from routes.blocks import bp as blocks_bp
 from routes.stats import bp as stats_bp
 from routes.statuses import bp as statuses_bp
+from routes.friends import bp as friends_bp
 
 
 def create_app():
@@ -40,6 +41,7 @@ def create_app():
     app.register_blueprint(blocks_bp)
     app.register_blueprint(stats_bp)
     app.register_blueprint(statuses_bp)
+    app.register_blueprint(friends_bp)
 
     @app.get("/")
     def health():
