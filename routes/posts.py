@@ -285,3 +285,60 @@ def posts_by_user(user_id):
     data = _filter_blocked(data, token)
     _attach_user_reactions(data, token)
     return jsonify(data), 200
+
+
+@bp.post("/<post_id>/save")
+@require_auth
+def save_post(post_id):
+    data, status = rest_request(
+        "POST", "saved_posts", token=g.token,
+        json_body={"user_id": g.user_id, "post_id": post_id},
+        prefer="resolution=ignore-duplicates",
+    )
+    if status >= 400:
+        return jsonify({"error": "could not save post"}), status
+    return jsonify({"saved": True}), 201
+
+
+@bp.delete("/<post_id>/save")
+@require_auth
+def unsave_post(post_id):
+    data, status = rest_request(
+        "DELETE", "saved_posts", token=g.token,
+        params={"post_id": f"eq.{post_id}", "user_id": f"eq.{g.user_id}"},
+    )
+    if status >= 400:
+        return jsonify({"error": "could not unsave post"}), status
+    return jsonify({"saved": False}), 200
+
+
+@bp.get("/saved")
+@require_auth
+def list_saved():
+    """Powers the Saved tab on Profile — every post the caller has
+    bookmarked, most recent save first. Joins back through `feed` so
+    the shape matches everywhere else a post gets rendered (author
+    info, score, comment_count all included)."""
+    saved, status = rest_request(
+        "GET", "saved_posts", token=g.token,
+        params={"user_id": f"eq.{g.user_id}", "select": "post_id,created_at", "order": "created_at.desc"},
+    )
+    if status != 200:
+        return jsonify({"error": "could not load saved posts"}), status
+    if not saved:
+        return jsonify([]), 200
+
+    post_ids = [s["post_id"] for s in saved]
+    posts_data, pstatus = rest_request(
+        "GET", "feed", token=g.token, params={"id": f"in.({','.join(post_ids)})", "select": "*"},
+    )
+    if pstatus != 200:
+        return jsonify({"error": "could not load saved posts"}), pstatus
+
+    by_id = {p["id"]: p for p in (posts_data or [])}
+    ordered = [by_id[pid] for pid in post_ids if pid in by_id]  # preserves save-order, not feed's random order
+    ordered = _filter_blocked(ordered, g.token)
+    _attach_user_reactions(ordered, g.token)
+    for p in ordered:
+        p["saved"] = True
+    return jsonify(ordered), 200
