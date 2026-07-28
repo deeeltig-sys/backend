@@ -101,6 +101,27 @@ def upload_image():
     return jsonify({"url": data["url"]}), 201
 
 
+def _attach_original_posts(posts, token):
+    """For any post with repost_of set, fetch the original (through the
+    `feed` view so author info/score come along for free) and attach
+    it as `original_post`. A repost of something since deleted or
+    unreactive gets `original_post: None` — the frontend shows "this
+    post is no longer available" rather than silently rendering
+    nothing, so a repost never just looks broken with no explanation."""
+    if not posts:
+        return
+    repost_ids = list({p["repost_of"] for p in posts if p.get("repost_of")})
+    if not repost_ids:
+        return
+    originals, status = rest_request(
+        "GET", "feed", token=token, params={"id": f"in.({','.join(repost_ids)})", "select": "*"},
+    )
+    by_id = {o["id"]: o for o in (originals or [])} if status == 200 else {}
+    for p in posts:
+        if p.get("repost_of"):
+            p["original_post"] = by_id.get(p["repost_of"])
+
+
 @bp.get("/feed")
 @optional_auth
 def feed():
@@ -140,6 +161,7 @@ def feed():
 
     data = _filter_blocked(data, g.token)
     _attach_user_reactions(data, g.token)
+    _attach_original_posts(data, g.token)
     return jsonify(data), 200
 
 
@@ -168,6 +190,7 @@ def search_posts():
     token = _bearer_token_if_present()
     data = _filter_blocked(data, token)
     _attach_user_reactions(data, token)
+    _attach_original_posts(data, token)
     return jsonify(data), 200
 
 
@@ -177,11 +200,25 @@ def create_post():
     body = request.get_json(silent=True) or {}
     content = (body.get("content") or "").strip()
     image_url = body.get("image_url")
+    repost_of = body.get("repost_of")
 
-    if not content and not image_url:
-        return jsonify({"error": "write something or attach a photo before posting"}), 400
-    if content and not validate_post_content(content):
-        return jsonify({"error": "post must be 1-2000 characters"}), 400
+    if repost_of:
+        original, ostatus = rest_request(
+            "GET", "posts", token=g.token,
+            params={"id": f"eq.{repost_of}", "status": "eq.active", "select": "id"},
+        )
+        if ostatus != 200 or not original:
+            return jsonify({"error": "the post you're reposting is no longer available"}), 404
+        # A pure repost carries no content/image of its own — the
+        # original's is what displays. Commentary (a "quote repost")
+        # is still optional on top of that.
+        if content and not validate_post_content(content):
+            return jsonify({"error": "your added comment must be under 2000 characters"}), 400
+    else:
+        if not content and not image_url:
+            return jsonify({"error": "write something or attach a photo before posting"}), 400
+        if content and not validate_post_content(content):
+            return jsonify({"error": "post must be 1-2000 characters"}), 400
 
     profile, pstatus = rest_request(
         "GET", "users", token=g.token,
@@ -193,8 +230,9 @@ def create_post():
     payload = {
         "author_id": g.user_id,
         "university_id": profile[0]["university_id"],
-        "content": content,
+        "content": content or None,
         "image_url": image_url,
+        "repost_of": repost_of,
     }
     data, status = rest_request(
         "POST", "posts", token=g.token, json_body=payload, prefer="return=representation",
@@ -284,6 +322,7 @@ def posts_by_user(user_id):
     token = _bearer_token_if_present()
     data = _filter_blocked(data, token)
     _attach_user_reactions(data, token)
+    _attach_original_posts(data, token)
     return jsonify(data), 200
 
 
@@ -339,6 +378,7 @@ def list_saved():
     ordered = [by_id[pid] for pid in post_ids if pid in by_id]  # preserves save-order, not feed's random order
     ordered = _filter_blocked(ordered, g.token)
     _attach_user_reactions(ordered, g.token)
+    _attach_original_posts(ordered, g.token)
     for p in ordered:
         p["saved"] = True
     return jsonify(ordered), 200

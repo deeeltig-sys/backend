@@ -92,3 +92,23 @@ def suggested_users():
         results += topup
 
     return jsonify([public_user_fields(row) for row in results]), 200
+
+
+@bp.get("")
+@require_auth
+def list_all_users():
+    """Browse every student on the platform — the actual 'add all
+    users to the friends page' ask. Paginated, excludes the caller,
+    ordered alphabetically so it reads as a directory rather than a
+    popularity ranking (follower_count ordering is what /suggested
+    already does; this is deliberately the plain, complete list)."""
+    limit = min(int(request.args.get("limit", 40)), 100)
+    offset = int(request.args.get("offset", 0))
+
+    data, status = rest_request(
+        "GET", "users", token=g.token,
+        params={"id": f"neq.{g.user_id}", "select": "*", "order": "full_name.asc", "limit": limit, "offset": offset},
+    )
+    if status != 200:
+        return jsonify({"error": "could not load students"}), status
+    return jsonify([public_user_fields(row) for row in (data or [])]), 200
