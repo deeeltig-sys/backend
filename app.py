@@ -1,6 +1,7 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
 from config import Config
+from lib.limiter import limiter
 from routes.auth import bp as auth_bp
 from routes.posts import bp as posts_bp
 from routes.reactions import bp as reactions_bp
@@ -24,6 +25,7 @@ def create_app():
     Config.validate()
     app = Flask(__name__)
     CORS(app, resources={r"/api/*": {"origins": Config.CORS_ORIGINS}})
+    limiter.init_app(app)
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(posts_bp)
@@ -46,6 +48,10 @@ def create_app():
     @app.get("/")
     def health():
         return jsonify({"status": "ok", "service": "campusmeet-backend"}), 200
+
+    @app.errorhandler(429)
+    def rate_limited(_e):
+        return jsonify({"error": "too many attempts, please wait and try again"}), 429
 
     @app.errorhandler(404)
     def not_found(_e):
