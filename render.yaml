@@ -13,6 +13,6 @@ services:
       - key: DEFAULT_UNIVERSITY_CODE
         value: USTED
       - key: CORS_ORIGINS
-        value: "*"
+        value: "https://campusmeetx.netlify.app,capacitor://localhost,http://localhost"
       - key: FLASK_ENV
         value: production

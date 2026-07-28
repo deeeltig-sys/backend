@@ -4,11 +4,13 @@ from lib.supabase_client import (
     auth_update_password, auth_delete_self, rest_request,
 )
 from lib.decorators import require_auth
+from lib.limiter import limiter
 
 bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 
 
 @bp.post("/signup")
+@limiter.limit("10 per hour")
 def signup():
     """Open signup — no OTP, no bottleneck. Account is fully usable the
     moment this returns. verified_at starts null; that's a separate,
@@ -45,6 +47,7 @@ def signup():
 
 
 @bp.post("/login")
+@limiter.limit("10 per minute")
 def login():
     body = request.get_json(silent=True) or {}
     email = (body.get("email") or "").strip().lower()
@@ -92,6 +95,7 @@ def me():
 
 
 @bp.post("/forgot-password")
+@limiter.limit("5 per hour")
 def forgot_password():
     """Triggers the recovery email. Always returns success even if the
     email doesn't match an account — confirming or denying an email's
