@@ -158,6 +158,31 @@ def list_conversations():
     return jsonify(result), 200
 
 
+@bp.get("/unread-count")
+@require_auth
+def unread_message_count():
+    """Get count of unread messages received by the current user.
+    
+    Returns: {"count": N}
+    
+    A message is unread if:
+    1. The current user is the recipient (not the sender)
+    2. The message has no read_at timestamp
+    """
+    data, status = rest_request(
+        "GET", "messages", token=g.token,
+        params={
+            "recipient_id": f"eq.{g.user_id}",
+            "read_at": "is.null",
+            "select": "id",
+        },
+    )
+    if status != 200:
+        return jsonify({"error": "could not load unread count"}), status
+    
+    return jsonify({"count": len(data or [])}), 200
+
+
 @bp.get("/active-contacts")
 @require_auth
 def active_contacts():
