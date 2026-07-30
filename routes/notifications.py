@@ -20,7 +20,8 @@ def list_notifications():
         "GET", "notifications", token=g.token,
         params={
             "user_id": f"eq.{g.user_id}",
-            "select": "id,type,target_type,target_id,actor_id,read,created_at,actor:users(full_name,avatar_url)",
+            "select": "id,type,target_type,target_id,actor_id,read,created_at,"
+                      "actor:users!notifications_actor_id_fkey(full_name,avatar_url)",
             "order": "created_at.desc",
             "limit": limit,
         },
