@@ -147,31 +147,107 @@ def unfriend(user_id):
     return jsonify({"unfriended": True}), 200
 
 
+def _pending_request_ids(user_id, token):
+    """Everyone the caller has an open (pending) friend_request with in
+    either direction — these belong in the Requests tab, not "People
+    you may know" too. Without this exclusion, someone you already
+    sent a request to (or who already sent you one) would keep
+    reappearing in the suggestions grid right next to the Requests
+    section showing the same person, which reads as broken."""
+    data, status = rest_request(
+        "GET", "friend_requests", token=token,
+        params={
+            "or": f"(sender_id.eq.{user_id},receiver_id.eq.{user_id})",
+            "status": "eq.pending",
+            "select": "sender_id,receiver_id",
+        },
+    )
+    if status != 200:
+        return set()
+    ids = set()
+    for row in data or []:
+        ids.add(row["sender_id"])
+        ids.add(row["receiver_id"])
+    ids.discard(user_id)
+    return ids
+
+
 @bp.get("/suggestions")
 @require_auth
 def friend_suggestions():
-    """Friends-of-friends — the actual discovery mechanic beyond just
-    browsing one profile at a time. People who share at least one
-    friend with the caller, aren't already a friend, and aren't the
-    caller. Capped to a reasonable pool of mutual-friend lookups so
-    this doesn't blow up for someone with hundreds of friends."""
+    """"People you may know" — three tiers, same escalating-fallback
+    shape as UsersAPI.suggested() in routes/users.py, so the grid is
+    never empty just because someone is brand new to the platform:
+
+    Tier 1 (mutual friends) — people who share at least one friend
+    with the caller. The strongest signal, but requires the caller to
+    already have friends, which most accounts on a young platform
+    don't yet — that was the actual bug: a person with zero friends
+    got an empty suggestions grid forever, with no way to ever get
+    their first friend through this screen.
+
+    Tier 2 (same university) — once mutual-friend candidates run out
+    or the caller has no friends at all, fill from other students at
+    the same campus. This is the real fix: every signed-up account
+    becomes discoverable here, not just friends-of-friends.
+
+    Tier 3 (anyone) — top up across the whole platform if a small or
+    brand-new university doesn't have enough people yet.
+
+    Throughout, excludes: the caller, existing friends, and anyone
+    with a pending request already open in either direction (that
+    belongs in the Requests tab, not duplicated here).
+    """
     limit = min(int(request.args.get("limit", 15)), 30)
     my_ids = set(_friend_ids(g.user_id, g.token))
-    if not my_ids:
-        return jsonify([]), 200
+    pending_ids = _pending_request_ids(g.user_id, g.token)
+    exclude_ids = {g.user_id} | my_ids | pending_ids
 
-    candidates = {}
+    # ---- Tier 1: mutual friends ----
+    mutual_counts = {}
     for friend_id in list(my_ids)[:20]:
         their_friends = _friend_ids(friend_id, g.token)
         for candidate_id in their_friends:
-            if candidate_id == g.user_id or candidate_id in my_ids:
+            if candidate_id in exclude_ids:
                 continue
-            candidates[candidate_id] = candidates.get(candidate_id, 0) + 1
+            mutual_counts[candidate_id] = mutual_counts.get(candidate_id, 0) + 1
 
-    if not candidates:
+    ranked_ids = sorted(mutual_counts, key=mutual_counts.get, reverse=True)[:limit]
+    exclude_ids |= set(ranked_ids)
+
+    def fetch(params):
+        data, status = rest_request("GET", "users", token=g.token, params=params)
+        return data if status == 200 else []
+
+    # ---- Tier 2: same university ----
+    if len(ranked_ids) < limit:
+        me, status = rest_request(
+            "GET", "users", token=g.token,
+            params={"select": "university_id", "id": f"eq.{g.user_id}"},
+        )
+        university_id = (me or [{}])[0].get("university_id") if status == 200 else None
+        if university_id:
+            campus_rows = fetch({
+                "select": "id", "id": f"not.in.({','.join(exclude_ids)})",
+                "university_id": f"eq.{university_id}",
+                "order": "created_at.desc", "limit": limit - len(ranked_ids),
+            })
+            campus_ids = [row["id"] for row in campus_rows]
+            ranked_ids += campus_ids
+            exclude_ids |= set(campus_ids)
+
+    # ---- Tier 3: anyone, top up ----
+    if len(ranked_ids) < limit:
+        topup_rows = fetch({
+            "select": "id", "id": f"not.in.({','.join(exclude_ids)})",
+            "order": "created_at.desc", "limit": limit - len(ranked_ids),
+        })
+        topup_ids = [row["id"] for row in topup_rows]
+        ranked_ids += topup_ids
+
+    if not ranked_ids:
         return jsonify([]), 200
 
-    ranked_ids = sorted(candidates, key=candidates.get, reverse=True)[:limit]
     data, status = rest_request(
         "GET", "users", token=g.token,
         params={"id": f"in.({','.join(ranked_ids)})", "select": "*"},
@@ -184,6 +260,11 @@ def friend_suggestions():
     for cid in ranked_ids:
         if cid in by_id:
             shaped = public_user_fields(by_id[cid])
-            shaped["mutual_friends"] = candidates[cid]
+            # Only tier 1 has a real mutual-friend count; tiers 2/3
+            # deliberately omit the field rather than sending a fake 0,
+            # so the frontend can choose not to render "0 mutual
+            # friends" as if that were a meaningful signal.
+            if cid in mutual_counts:
+                shaped["mutual_friends"] = mutual_counts[cid]
             result.append(shaped)
     return jsonify(result), 200

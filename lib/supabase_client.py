@@ -56,6 +56,37 @@ def rest_request(method: str, table: str, token: str | None = None, params: dict
     return _parse(response)
 
 
+def rest_count(table: str, token: str | None = None, params: dict | None = None):
+    """Returns just the row count for `table` filtered by `params`,
+    without ever transferring the matching rows themselves. Uses a
+    HEAD request with `Prefer: count=exact` — Postgres computes the
+    count once and PostgREST reports it in the `Content-Range`
+    response header (e.g. "*/42"), which we read straight off the
+    HTTP response with no body to parse.
+
+    The rest of this codebase counts things by fetching every row and
+    calling len() on the list (see the original routes/stats.py) —
+    fine at 30 users, but that approach re-downloads the entire table
+    on every call and gets slower with every signup. This is the
+    version that stays flat as CampusMEET grows, used by the admin
+    stats dashboard (routes/admin.py) where several counts are needed
+    on one screen load.
+    """
+    url = f"{Config.SUPABASE_URL}/rest/v1/{table}"
+    response = requests.head(
+        url,
+        headers=_headers(token, prefer="count=exact"),
+        params=params,
+        timeout=REQUEST_TIMEOUT,
+    )
+    content_range = response.headers.get("Content-Range", "")
+    if "/" in content_range:
+        total = content_range.rsplit("/", 1)[-1]
+        if total.isdigit():
+            return int(total), response.status_code
+    return None, response.status_code
+
+
 def rpc(function_name: str, token: str | None = None, payload: dict | None = None):
     url = f"{Config.SUPABASE_URL}/rest/v1/rpc/{function_name}"
     response = requests.post(

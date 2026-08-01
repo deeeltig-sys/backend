@@ -2,10 +2,67 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, request, jsonify, g
-from lib.supabase_client import rest_request, rpc
+from lib.supabase_client import rest_request, rest_count, rpc
 from lib.decorators import require_staff
 
 bp = Blueprint("admin", __name__, url_prefix="/api/admin")
+
+
+@bp.get("/stats")
+@require_staff
+def stats():
+    """The growth dashboard — every number a founder/admin actually
+    checks in on, in one call. Each figure uses rest_count (exact
+    count via PostgREST, no rows downloaded) rather than fetching full
+    tables, so this stays a fast single screen load even once
+    CampusMEET has thousands of users across many campuses instead of
+    30 at one.
+
+    Deliberately read-only and side-effect free — this endpoint never
+    writes anything, it only ever answers "where do things stand right
+    now."
+    """
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+
+    def count(table, params=None):
+        n, status = rest_count(table, token=g.token, params=params or {})
+        return n if status == 200 else None
+
+    total_users = count("users")
+    verified_users = count("users", {"verified_at": "not.is.null"})
+    pending_users = count("users", {"verified_at": "is.null"})
+    new_users_7d = count("users", {"created_at": f"gte.{week_ago}"})
+
+    total_posts = count("posts", {"status": "eq.active"})
+    posts_today = count("posts", {"status": "eq.active", "created_at": f"gte.{today_start}"})
+
+    total_universities = count("universities")
+
+    pending_reports = count("reports", {"status": "eq.pending"})
+
+    # Active universities = universities with at least one signed-up
+    # user. Not a straight rest_count (PostgREST can't COUNT DISTINCT
+    # a foreign column through this simple params interface), so this
+    # one still reads the distinct university_id column — a single
+    # narrow column across all users, not a full-table fetch, which is
+    # the meaningful cost difference the other counts above avoid.
+    uni_rows, uni_status = rest_request(
+        "GET", "users", token=g.token, params={"select": "university_id"},
+    )
+    active_universities = len({r["university_id"] for r in uni_rows}) if uni_status == 200 and uni_rows else None
+
+    return jsonify({
+        "total_users": total_users,
+        "verified_users": verified_users,
+        "pending_users": pending_users,
+        "new_users_7d": new_users_7d,
+        "total_posts": total_posts,
+        "posts_today": posts_today,
+        "total_universities": total_universities,
+        "active_universities": active_universities,
+        "pending_reports": pending_reports,
+    }), 200
 
 
 @bp.get("/users")
