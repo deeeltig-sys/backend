@@ -63,6 +63,47 @@ def optional_auth(fn):
 
 
 def require_staff(fn):
+    """Matches db/schema.sql's is_staff() function exactly: role in
+    ('moderator', 'admin'). Before this fix, this decorator only ever
+    accepted 'admin' — a moderator account would pass every RLS check
+    at the database level (is_staff() already covers them) but get a
+    hard 403 from every single admin route in this Flask layer. That
+    made 'moderator' a dead role: grantable in the schema, unusable in
+    the app. Anything gated by @require_staff (verify queue, reports,
+    stats, yawa velocity) is meant to be regular day-to-day staff work
+    — safe to hand to a trusted team, not just the founder."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        token = _extract_bearer_token()
+        if not token:
+            return jsonify({"error": "sign in required"}), 401
+
+        user, status = auth_get_user(token)
+        if status != 200 or not user or not user.get("id"):
+            return jsonify({"error": "session expired, sign in again"}), 401
+
+        profile, pstatus = rest_request(
+            "GET", "users", token=token,
+            params={"id": f"eq.{user['id']}", "select": "role"},
+        )
+        if pstatus != 200 or not profile or profile[0].get("role") not in ("moderator", "admin"):
+            return jsonify({"error": "staff access required"}), 403
+
+        g.token = token
+        g.user_id = user["id"]
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def require_admin(fn):
+    """Strictly role == 'admin' — deliberately NOT satisfied by
+    'moderator'. Reserved for the handful of actions where a
+    moderator having access would be a privilege-escalation path,
+    most importantly changing anyone's role at all (a moderator who
+    could promote people could promote themselves to admin). Use
+    @require_staff for normal day-to-day moderation work, and this
+    only for admin-of-admins actions."""
     @wraps(fn)
     def wrapper(*args, **kwargs):
         token = _extract_bearer_token()
@@ -78,7 +119,7 @@ def require_staff(fn):
             params={"id": f"eq.{user['id']}", "select": "role"},
         )
         if pstatus != 200 or not profile or profile[0].get("role") != "admin":
-            return jsonify({"error": "staff access required"}), 403
+            return jsonify({"error": "admin access required"}), 403
 
         g.token = token
         g.user_id = user["id"]

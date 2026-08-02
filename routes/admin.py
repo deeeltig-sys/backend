@@ -3,9 +3,58 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, rest_count, rpc
-from lib.decorators import require_staff
+from lib.decorators import require_staff, require_admin
 
 bp = Blueprint("admin", __name__, url_prefix="/api/admin")
+
+VALID_ROLES = ("student", "moderator", "admin")
+
+
+@bp.get("/staff")
+@require_staff
+def list_staff():
+    """Everyone currently holding moderator or admin — the roster
+    view for the Team tab, so it's obvious at a glance who already has
+    access before promoting anyone new."""
+    data, status = rest_request(
+        "GET", "users", token=g.token,
+        params={"role": "in.(moderator,admin)", "select": "id,full_name,avatar_url,role,student_email", "order": "role.desc"},
+    )
+    if status != 200:
+        return jsonify({"error": "could not load staff list"}), status
+    return jsonify(data), 200
+
+
+@bp.post("/users/<user_id>/role")
+@require_admin
+def set_role(user_id):
+    """Promotes or demotes someone to/from moderator or admin — the
+    actual replacement for hand-editing the database every time.
+    Deliberately @require_admin, not @require_staff: if a moderator
+    could call this, they could promote themselves straight to admin.
+    Only an existing admin can grant or revoke staff access, same
+    trust boundary as verify_student() has at the database level for
+    a different action.
+
+    Guards against a founder locking themselves out by accident: you
+    can't demote your own account through this route."""
+    body = request.get_json(silent=True) or {}
+    new_role = body.get("role")
+    if new_role not in VALID_ROLES:
+        return jsonify({"error": f"role must be one of {', '.join(VALID_ROLES)}"}), 400
+
+    if user_id == g.user_id and new_role != "admin":
+        return jsonify({"error": "you can't demote your own account"}), 400
+
+    data, status = rest_request(
+        "PATCH", "users", token=g.token,
+        params={"id": f"eq.{user_id}"}, json_body={"role": new_role}, prefer="return=representation",
+    )
+    if status >= 400:
+        return jsonify({"error": "could not update role"}), status
+    if not data:
+        return jsonify({"error": "user not found"}), 404
+    return jsonify(data[0]), 200
 
 
 @bp.get("/stats")
