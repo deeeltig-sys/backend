@@ -5,6 +5,7 @@ from routes.posts import (
     _filter_blocked,
     _attach_user_reactions,
     _attach_original_posts,
+    _attach_polls,
 )
 
 bp = Blueprint("hashtags", __name__, url_prefix="/api/hashtags")
@@ -79,5 +80,6 @@ def posts_for_hashtag(tag):
     ordered = _filter_blocked(ordered, token)
     _attach_user_reactions(ordered, token)
     _attach_original_posts(ordered, token)
+    _attach_polls(ordered, token)
 
     return jsonify({"tag": clean, "post_count": hashtag[0]["post_count"], "posts": ordered}), 200

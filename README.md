@@ -1,152 +1,82 @@
-# CampusMEET Backend
+# CampusMEET — Groups, Events, Highlights, Polls, Insights (BACKEND)
 
-Flask API for CampusMEET (USTED), talking to Supabase over its REST/Auth
-HTTP API. Every request forwards the user's own JWT so Postgres Row-Level
-Security enforces the real rules — this backend has no service-role
-override and can't bypass RLS even if it wanted to.
+This is the backend half of the 5-feature sweep. Frontend is being built
+now and will follow as a second zip. Everything here has been verified
+with a real Flask `create_app()` import test — all ~20 new routes
+confirmed registering and resolving correctly (including a routing-order
+check to make sure `/api/groups/mine` doesn't get swallowed by
+`/api/groups/<group_id>`).
 
----
+## Apply in this order
 
-## 1. Supabase setup (do this first)
+### 1. Database — run these four in Supabase SQL editor, in this order:
 
-1. In your Supabase project, go to **SQL Editor** and confirm
-   `db/schema.sql` has already been applied (you've done this — the
-   tables `blocks`, `comments`, `hidden_posts`, `posts`, `reactions`,
-   `reports`, `universities`, `users` and the `feed` view should all
-   exist). If you ever need to start clean, run `db/reset.sql` first,
-   then `db/schema.sql`.
+1. `db/groups_migration.sql`
+2. `db/events_migration.sql`
+3. `db/highlights_migration.sql`
+4. `db/polls_migration.sql`
 
-2. **Turn off email confirmation** — this is what makes signup
-   bottleneck-free. Go to **Authentication → Providers → Email** and
-   disable "Confirm email." Without this, Supabase will require an
-   email click before a session is returned, which is the OTP-style
-   friction you explicitly said not to have.
+All additive — no existing table's behavior changes. One important
+detail: **`groups_migration.sql` redefines the `feed` view** to add
+`group_id` to it. Your `feed` view lists explicit columns rather than
+`posts.*` (same as when `repost_of` was added), so without this a group
+post would silently never show up anywhere. This is intentional and
+necessary — not a stray change.
 
-3. **Run the storage migrations** — `db/storage_policies.sql` creates
-   the `post-images` bucket, and `db/avatar_storage_policies.sql`
-   creates the `avatars` bucket, both public-read with per-user
-   folder write permissions. Run both in the SQL Editor the same way
-   you ran `schema.sql`.
+### 2. Backend — overwrite these files at the matching path in your project:
 
-4. Grab two values from **Project Settings → API**:
-   - `Project URL` → this is `SUPABASE_URL`
-   - `anon public` key → this is `SUPABASE_ANON_KEY`
+- `routes/groups.py` → **NEW** — create/discover/join/leave groups, member list, group-scoped feed
+- `routes/events.py` → **NEW** — create events, upcoming list, RSVP (interested/going), attendees
+- `routes/highlights.py` → **NEW** — create highlight collections, add a status into one, view, delete
+- `routes/posts.py` → **OVERWRITE** — adds poll voting endpoints, poll creation, optional `group_id` on posts, and fixes `GET /api/posts/<id>` to go through the `feed` view with full enrichment (it previously read the raw table with no author info, reactions, or repost data attached — a pre-existing gap this sweep needed fixed since a poll now needs to render correctly there too)
+- `routes/stats.py` → **OVERWRITE** — adds `GET /api/stats/insights`, a private performance dashboard for your own posts
+- `routes/hashtags.py` → **OVERWRITE** — trivial addition, now also attaches poll data to hashtag-feed results for consistency
+- `app.py` → **OVERWRITE** — registers the three new blueprints
 
-   You will need both in step 3 below.
+## What each feature does, mechanically
 
-5. Manually promote yourself to admin so the "Verify USTED" endpoints
-   work for your account:
-   ```sql
-   update users set role = 'admin' where student_id_number = 'YOUR_ID_HERE';
-   ```
+**Groups** — `groups` + `group_members` tables. Creating a group makes
+you its first admin automatically (trigger, not a second client call
+that could be skipped). Public groups: self-join. Private groups: only
+an existing admin can add someone (no invite-request flow yet — noted
+below). A post can now optionally carry a `group_id`; posting into a
+group is membership-checked server-side, not just hidden in the UI.
 
----
+**Events** — `events` + `event_rsvps`. Two RSVP states (`interested`,
+`going`), each with its own live count via triggers, including switching
+between them. Can optionally hang off a group.
 
-## 2. Push this to GitHub
+**Highlights** — `status_highlights` + `status_highlight_items`. Adding
+a status to a highlight **copies** its content rather than referencing
+the original row — your Status/Story feature already lets rows expire
+and eventually get purged (see `status_and_settings_migration.sql`), so
+a highlight has to be an independent, permanent copy to actually survive
+that.
 
-From inside this `backend/` folder:
+**Polls** — `poll_options` + `poll_votes`. A poll is just a normal post
+(the question is `posts.content`, same as always) with 2-4 attached
+options. One vote per person, switchable — trigger tracks both the
+initial vote and a later change. Individual ballots are private
+(`poll_votes` RLS: select own only); running totals on `poll_options`
+are public. Wired into every place a post can appear — main feed,
+search, profile grid, saved posts, hashtag feeds, single post view.
 
-```bash
-git init
-git add .
-git commit -m "CampusMEET backend — initial build"
-git branch -M main
-git remote add origin https://github.com/deeeltig-sys/campusmeet-backend.git
-git push -u origin main
-```
+**Insights** — no new tables. `GET /api/stats/insights` sums up
+`view_count`/`reaction_count`/`comment_count` (all already existing
+columns) across your own active posts and ranks your top 5. Private to
+the caller only — there's no way to hit this for anyone but yourself.
 
-If `campusmeet-backend` doesn't exist yet on GitHub, create it first at
-github.com/new under the `deeeltig-sys` account (keep it private if you'd
-rather not expose the code publicly), then run the commands above.
+## Known scope trims (deliberate, not oversights)
 
-`.gitignore` already excludes `.env` — never commit real Supabase keys.
+- **Private groups have no invite/request flow yet** — an admin can add
+  someone via the members table directly, but there's no UI/API for "request
+  to join" or "here's an invite link." Worth a follow-up round.
+- **No feed-mixing** — group posts only show inside that group's own
+  page, not blended into your main feed even for members. Simpler and
+  safer to ship first; FB does eventually blend these but it's a
+  ranking-complexity question worth deciding deliberately later.
 
----
+## Frontend
 
-## 3. Deploy to Render
-
-**Option A — using render.yaml (fastest):**
-1. Go to [render.com/dashboard](https://dashboard.render.com) → **New → Blueprint**.
-2. Connect the `campusmeet-backend` GitHub repo.
-3. Render reads `render.yaml` automatically and creates the service.
-4. It will prompt you for `SUPABASE_URL` and `SUPABASE_ANON_KEY` (marked
-   `sync: false` in the blueprint) — paste in the values from step 1.3.
-5. Deploy.
-
-**Option B — manual setup:**
-1. **New → Web Service** → connect the repo.
-2. Root Directory: `backend` (leave blank if this repo *is* the backend folder itself).
-3. Runtime: Python 3.
-4. Build Command: `pip install -r requirements.txt`
-5. Start Command: `gunicorn app:app`
-6. Add environment variables:
-   - `SUPABASE_URL`
-   - `SUPABASE_ANON_KEY`
-   - `DEFAULT_UNIVERSITY_CODE` = `USTED`
-   - `CORS_ORIGINS` = `*` for now — tighten this once the Capacitor app
-     and any web frontend have real origins.
-   - `FLASK_ENV` = `production`
-7. Create Web Service.
-
-Render will give you a URL like `https://campusmeet-backend.onrender.com`
-— that's your `API_BASE_URL` for the frontend and the Capacitor shell.
-
-Note: Render's free tier spins the service down after inactivity, so the
-first request after idle time takes a few seconds to wake it up. Fine
-for testing; worth upgrading before real launch traffic.
-
----
-
-## 4. Quick smoke test
-
-```bash
-curl https://your-app.onrender.com/
-# {"status": "ok", "service": "campusmeet-backend"}
-
-curl -X POST https://your-app.onrender.com/api/auth/signup \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"testpass123","full_name":"Test Student","student_id_number":"5212345678"}'
-# returns an access_token if email confirmation is off (step 1.2)
-
-curl https://your-app.onrender.com/api/posts/feed
-# []  (empty feed, expected — no posts yet)
-```
-
----
-
-## API reference
-
-| Method | Path                              | Auth        | Notes |
-|--------|------------------------------------|-------------|-------|
-| POST   | /api/auth/signup                  | none        | open signup |
-| POST   | /api/auth/login                   | none        | |
-| POST   | /api/auth/refresh                 | none        | body: `{"refresh_token": "..."}` — silently renews an expired session |
-| GET    | /api/auth/me                      | student     | |
-| GET    | /api/posts/feed                   | none        | ranked, active posts only |
-| POST   | /api/posts                        | student     | body: `{"content": "...", "image_url": "..."}` — one of the two is required |
-| POST   | /api/posts/upload-image           | student     | multipart, field `image` — returns `{"url": "..."}`, feed it into the create-post call above |
-| GET    | /api/posts/:id                    | none        | |
-| PATCH  | /api/posts/:id                    | author      | edit content, or `{"delete": true}` to soft-delete |
-| POST   | /api/posts/:id/view                | none        | |
-| POST   | /api/posts/:id/search-hit          | none        | |
-| POST   | /api/posts/:id/reactions           | student     | body: `{"type": "fire"}` |
-| DELETE | /api/posts/:id/reactions           | student     | |
-| GET    | /api/profile/:id                   | none        | |
-| PATCH  | /api/profile/me                    | student     | `full_name`, `avatar_url` |
-| POST   | /api/profile/upload-avatar         | student     | multipart, field `avatar` — uploads and saves in one call, returns the updated profile |
-| GET    | /api/admin/users                   | staff       | `?verified=false` for the pending queue |
-| POST   | /api/admin/users/:id/verify         | staff       | the "Verify USTED" button |
-| POST   | /api/admin/users/:id/unverify       | staff       | |
-| GET    | /api/admin/reports                 | staff       | |
-| PATCH  | /api/admin/reports/:id              | staff       | body: `{"status": "actioned"}` |
-
-All authenticated routes expect `Authorization: Bearer <access_token>`
-from the login/signup response.
-
-**Staying signed in.** Supabase access tokens expire in ~1 hour. The
-frontend stores both the `access_token` and `refresh_token` from
-login/signup, and any authenticated request that comes back `401`
-triggers a silent call to `/api/auth/refresh` before retrying —
-the person using the app never sees this happen. A student stays
-signed in until they explicitly tap "Sign out" (which clears both
-tokens), not until the access token's short expiry runs out.
+Coming next as a second zip — pages, components, nav entry points, and
+`api/client.js` additions for all five features.

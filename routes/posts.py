@@ -122,6 +122,51 @@ def _attach_original_posts(posts, token):
             p["original_post"] = by_id.get(p["repost_of"])
 
 
+def _attach_polls(posts, token):
+    """Mutates `posts` in place, adding a `poll` key to any post that
+    has options attached (`{options: [...], user_vote: option_id|None}`).
+    Posts with no poll_options rows are left untouched — the frontend
+    treats "no poll key" as "not a poll", same as how `original_post`
+    only shows up on actual reposts."""
+    if not posts:
+        return
+    post_ids = [p["id"] for p in posts]
+    options, status = rest_request(
+        "GET", "poll_options", token=token,
+        params={
+            "post_id": f"in.({','.join(post_ids)})",
+            "select": "id,post_id,option_text,order_index,vote_count",
+            "order": "order_index.asc",
+        },
+    )
+    if status != 200 or not options:
+        return
+
+    by_post = {}
+    for opt in options:
+        by_post.setdefault(opt["post_id"], []).append(opt)
+
+    user_vote_by_post = {}
+    if token:
+        votes, vstatus = rest_request(
+            "GET", "poll_votes", token=token,
+            params={"post_id": f"in.({','.join(by_post.keys())})", "select": "post_id,option_id"},
+        )
+        if vstatus == 200 and isinstance(votes, list):
+            user_vote_by_post = {v["post_id"]: v["option_id"] for v in votes}
+
+    total_by_post = {pid: sum(o["vote_count"] for o in opts) for pid, opts in by_post.items()}
+
+    for p in posts:
+        opts = by_post.get(p["id"])
+        if opts:
+            p["poll"] = {
+                "options": opts,
+                "total_votes": total_by_post.get(p["id"], 0),
+                "user_vote": user_vote_by_post.get(p["id"]),
+            }
+
+
 @bp.get("/feed")
 @optional_auth
 def feed():
@@ -162,6 +207,7 @@ def feed():
     data = _filter_blocked(data, g.token)
     _attach_user_reactions(data, g.token)
     _attach_original_posts(data, g.token)
+    _attach_polls(data, g.token)
     return jsonify(data), 200
 
 
@@ -191,6 +237,7 @@ def search_posts():
     data = _filter_blocked(data, token)
     _attach_user_reactions(data, token)
     _attach_original_posts(data, token)
+    _attach_polls(data, token)
     return jsonify(data), 200
 
 
@@ -201,6 +248,8 @@ def create_post():
     content = (body.get("content") or "").strip()
     image_url = body.get("image_url")
     repost_of = body.get("repost_of")
+    group_id = body.get("group_id")
+    poll_options = body.get("poll_options")
 
     if repost_of:
         original, ostatus = rest_request(
@@ -220,6 +269,25 @@ def create_post():
         if content and not validate_post_content(content):
             return jsonify({"error": "post must be 1-2000 characters"}), 400
 
+    if poll_options is not None:
+        if repost_of or image_url:
+            return jsonify({"error": "a poll can't also be a repost or carry an image"}), 400
+        if not isinstance(poll_options, list) or not (2 <= len(poll_options) <= 4):
+            return jsonify({"error": "a poll needs 2 to 4 options"}), 400
+        cleaned_options = [(o or "").strip() for o in poll_options]
+        if any(not (1 <= len(o) <= 80) for o in cleaned_options):
+            return jsonify({"error": "each poll option must be 1-80 characters"}), 400
+        if not content:
+            return jsonify({"error": "write a question for your poll"}), 400
+
+    if group_id:
+        membership, mstatus = rest_request(
+            "GET", "group_members", token=g.token,
+            params={"group_id": f"eq.{group_id}", "user_id": f"eq.{g.user_id}", "select": "user_id"},
+        )
+        if mstatus != 200 or not membership:
+            return jsonify({"error": "join the group before posting in it"}), 403
+
     profile, pstatus = rest_request(
         "GET", "users", token=g.token,
         params={"id": f"eq.{g.user_id}", "select": "university_id"},
@@ -233,20 +301,43 @@ def create_post():
         "content": content or None,
         "image_url": image_url,
         "repost_of": repost_of,
+        "group_id": group_id,
     }
     data, status = rest_request(
         "POST", "posts", token=g.token, json_body=payload, prefer="return=representation",
     )
     if status >= 400:
         return jsonify({"error": "could not create post"}), status
-    return jsonify(data[0] if isinstance(data, list) else data), 201
+    created = data[0] if isinstance(data, list) else data
+
+    if poll_options is not None:
+        options_payload = [
+            {"post_id": created["id"], "option_text": text, "order_index": i}
+            for i, text in enumerate(cleaned_options)
+        ]
+        opt_data, opt_status = rest_request(
+            "POST", "poll_options", token=g.token, json_body=options_payload, prefer="return=representation",
+        )
+        if opt_status >= 400:
+            # Post already exists at this point; the poll attachment failed
+            # but the text post itself is fine — surface it as a poll-
+            # specific error rather than pretending the whole post failed.
+            return jsonify({"error": "post created, but poll options could not be saved", "post": created}), 207
+        created["poll"] = {"options": opt_data, "total_votes": 0, "user_vote": None}
+
+    return jsonify(created), 201
 
 
 @bp.get("/<post_id>")
 def get_post(post_id):
-    data, status = rest_request("GET", "posts", params={"id": f"eq.{post_id}", "select": "*"})
+    data, status = rest_request("GET", "feed", params={"id": f"eq.{post_id}", "select": "*"})
     if status != 200 or not data:
         return jsonify({"error": "post not found"}), 404
+
+    token = _bearer_token_if_present()
+    _attach_user_reactions(data, token)
+    _attach_original_posts(data, token)
+    _attach_polls(data, token)
     return jsonify(data[0]), 200
 
 
@@ -278,6 +369,46 @@ def update_post(post_id):
     if not data:
         return jsonify({"error": "post not found or not yours"}), 404
     return jsonify(data[0]), 200
+
+
+@bp.post("/<post_id>/vote")
+@require_auth
+def vote_poll(post_id):
+    body = request.get_json(silent=True) or {}
+    option_id = body.get("option_id")
+    if not option_id:
+        return jsonify({"error": "option_id required"}), 400
+
+    option, ostatus = rest_request(
+        "GET", "poll_options", token=g.token,
+        params={"id": f"eq.{option_id}", "post_id": f"eq.{post_id}", "select": "id"},
+    )
+    if ostatus != 200 or not option:
+        return jsonify({"error": "that option doesn't belong to this poll"}), 404
+
+    # merge-duplicates on the (post_id, user_id) primary key is what
+    # makes "vote" and "change your vote" the same call — the
+    # bump_poll_vote_count trigger tells INSERT and UPDATE apart itself.
+    data, status = rest_request(
+        "POST", "poll_votes", token=g.token,
+        json_body={"post_id": post_id, "user_id": g.user_id, "option_id": option_id},
+        prefer="resolution=merge-duplicates,return=representation",
+    )
+    if status >= 400:
+        return jsonify({"error": "could not register your vote"}), status
+    return jsonify({"voted": True, "option_id": option_id}), 200
+
+
+@bp.delete("/<post_id>/vote")
+@require_auth
+def retract_vote(post_id):
+    data, status = rest_request(
+        "DELETE", "poll_votes", token=g.token,
+        params={"post_id": f"eq.{post_id}", "user_id": f"eq.{g.user_id}"},
+    )
+    if status >= 400:
+        return jsonify({"error": "could not retract your vote"}), status
+    return jsonify({"voted": False}), 200
 
 
 @bp.post("/<post_id>/view")
@@ -323,6 +454,7 @@ def posts_by_user(user_id):
     data = _filter_blocked(data, token)
     _attach_user_reactions(data, token)
     _attach_original_posts(data, token)
+    _attach_polls(data, token)
     return jsonify(data), 200
 
 
@@ -379,6 +511,7 @@ def list_saved():
     ordered = _filter_blocked(ordered, g.token)
     _attach_user_reactions(ordered, g.token)
     _attach_original_posts(ordered, g.token)
+    _attach_polls(ordered, g.token)
     for p in ordered:
         p["saved"] = True
     return jsonify(ordered), 200
