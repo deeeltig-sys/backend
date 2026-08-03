@@ -163,6 +163,66 @@ def _attach_polls(posts, token):
             }
 
 
+def _attach_mentions(posts, token):
+    """Mutates `posts` in place, adding a `mentions` key
+    (`[{id, full_name}, ...]`) to any post that tags other users.
+    Same "absent key means none" contract as `poll`/`original_post`."""
+    if not posts:
+        return
+    post_ids = [p["id"] for p in posts]
+    rows, status = rest_request(
+        "GET", "post_mentions", token=token,
+        params={
+            "post_id": f"in.({','.join(post_ids)})",
+            "select": "post_id,mentioned_user_id,user:users(id,full_name)",
+        },
+    )
+    if status != 200 or not rows:
+        return
+
+    by_post = {}
+    for row in rows:
+        u = row.get("user") or {}
+        if u.get("id"):
+            by_post.setdefault(row["post_id"], []).append({"id": u["id"], "full_name": u.get("full_name")})
+
+    for p in posts:
+        mentions = by_post.get(p["id"])
+        if mentions:
+            p["mentions"] = mentions
+
+
+def _attach_images(posts, token):
+    """Mutates `posts` in place, adding an `images` key
+    (`[{url, order_index}, ...]`) to any post created with more than
+    one photo. `posts.image_url` itself is untouched and still holds
+    the first image — this is purely additive so anything reading
+    `image_url` directly (older code, other integrations) keeps
+    working without ever knowing this table exists."""
+    if not posts:
+        return
+    post_ids = [p["id"] for p in posts]
+    rows, status = rest_request(
+        "GET", "post_images", token=token,
+        params={
+            "post_id": f"in.({','.join(post_ids)})",
+            "select": "post_id,image_url,order_index",
+            "order": "order_index.asc",
+        },
+    )
+    if status != 200 or not rows:
+        return
+
+    by_post = {}
+    for row in rows:
+        by_post.setdefault(row["post_id"], []).append({"url": row["image_url"], "order_index": row["order_index"]})
+
+    for p in posts:
+        images = by_post.get(p["id"])
+        if images:
+            p["images"] = images
+
+
 @bp.get("/feed")
 @optional_auth
 def feed():
@@ -204,6 +264,8 @@ def feed():
     _attach_user_reactions(data, g.token)
     _attach_original_posts(data, g.token)
     _attach_polls(data, g.token)
+    _attach_mentions(data, g.token)
+    _attach_images(data, g.token)
     return jsonify(data), 200
 
 
@@ -272,6 +334,8 @@ def explore():
     _attach_user_reactions(diversified, g.token)
     _attach_original_posts(diversified, g.token)
     _attach_polls(diversified, g.token)
+    _attach_mentions(diversified, g.token)
+    _attach_images(diversified, g.token)
     return jsonify(diversified), 200
 
 
@@ -302,7 +366,13 @@ def search_posts():
     _attach_user_reactions(data, token)
     _attach_original_posts(data, token)
     _attach_polls(data, token)
+    _attach_mentions(data, token)
+    _attach_images(data, token)
     return jsonify(data), 200
+
+
+MAX_CAROUSEL_IMAGES = 5
+MAX_MENTIONS_PER_POST = 20
 
 
 @bp.post("")
@@ -311,9 +381,21 @@ def create_post():
     body = request.get_json(silent=True) or {}
     content = (body.get("content") or "").strip()
     image_url = body.get("image_url")
+    image_urls = body.get("image_urls")  # optional carousel — list of already-uploaded URLs
     repost_of = body.get("repost_of")
     group_id = body.get("group_id")
     poll_options = body.get("poll_options")
+    mentioned_user_ids = body.get("mentioned_user_ids")
+
+    if image_urls is not None:
+        if not isinstance(image_urls, list) or not image_urls:
+            return jsonify({"error": "image_urls must be a non-empty list"}), 400
+        if len(image_urls) > MAX_CAROUSEL_IMAGES:
+            return jsonify({"error": f"a post can carry at most {MAX_CAROUSEL_IMAGES} photos"}), 400
+        # image_url stays the first photo, purely for backward
+        # compatibility with anything reading that single field
+        # directly — see db/post_images_migration.sql.
+        image_url = image_urls[0]
 
     if repost_of:
         original, ostatus = rest_request(
@@ -343,6 +425,22 @@ def create_post():
             return jsonify({"error": "each poll option must be 1-80 characters"}), 400
         if not content:
             return jsonify({"error": "write a question for your poll"}), 400
+
+    cleaned_mention_ids = []
+    if mentioned_user_ids is not None:
+        if not isinstance(mentioned_user_ids, list):
+            return jsonify({"error": "mentioned_user_ids must be a list"}), 400
+        # De-dup and cap, then verify each id is real before ever
+        # attempting the insert — silently drop bad ones rather than
+        # fail the whole post over a stale/mistyped id.
+        candidate_ids = list(dict.fromkeys(mentioned_user_ids))[:MAX_MENTIONS_PER_POST]
+        if candidate_ids:
+            existing, estatus = rest_request(
+                "GET", "users", token=g.token,
+                params={"id": f"in.({','.join(candidate_ids)})", "select": "id"},
+            )
+            if estatus == 200 and existing:
+                cleaned_mention_ids = [u["id"] for u in existing]
 
     if group_id:
         membership, mstatus = rest_request(
@@ -389,6 +487,27 @@ def create_post():
             return jsonify({"error": "post created, but poll options could not be saved", "post": created}), 207
         created["poll"] = {"options": opt_data, "total_votes": 0, "user_vote": None}
 
+    if image_urls is not None:
+        images_payload = [
+            {"post_id": created["id"], "image_url": url, "order_index": i}
+            for i, url in enumerate(image_urls)
+        ]
+        img_data, img_status = rest_request(
+            "POST", "post_images", token=g.token, json_body=images_payload, prefer="return=representation",
+        )
+        if img_status < 400:
+            created["images"] = [{"url": r["image_url"], "order_index": r["order_index"]} for r in img_data]
+
+    if cleaned_mention_ids:
+        mentions_payload = [{"post_id": created["id"], "mentioned_user_id": uid} for uid in cleaned_mention_ids]
+        rest_request(
+            "POST", "post_mentions", token=g.token, json_body=mentions_payload,
+            prefer="resolution=ignore-duplicates",
+        )
+        # Names for the immediate response — cheap since we already
+        # fetched these exact user rows above during validation.
+        created["mentions"] = [{"id": u["id"], "full_name": u.get("full_name")} for u in existing if u["id"] in cleaned_mention_ids]
+
     return jsonify(created), 201
 
 
@@ -402,6 +521,8 @@ def get_post(post_id):
     _attach_user_reactions(data, token)
     _attach_original_posts(data, token)
     _attach_polls(data, token)
+    _attach_mentions(data, token)
+    _attach_images(data, token)
     return jsonify(data[0]), 200
 
 
@@ -519,6 +640,8 @@ def posts_by_user(user_id):
     _attach_user_reactions(data, token)
     _attach_original_posts(data, token)
     _attach_polls(data, token)
+    _attach_mentions(data, token)
+    _attach_images(data, token)
     return jsonify(data), 200
 
 
@@ -576,6 +699,8 @@ def list_saved():
     _attach_user_reactions(ordered, g.token)
     _attach_original_posts(ordered, g.token)
     _attach_polls(ordered, g.token)
+    _attach_mentions(ordered, g.token)
+    _attach_images(ordered, g.token)
     for p in ordered:
         p["saved"] = True
     return jsonify(ordered), 200
