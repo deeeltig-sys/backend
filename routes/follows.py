@@ -43,7 +43,7 @@ def list_followers(user_id):
         "GET", "follows",
         params={
             "followed_id": f"eq.{user_id}",
-            "select": "created_at,follower:users(id,full_name,avatar_url,verified_at)",
+            "select": "created_at,follower:users!follows_follower_id_fkey(id,full_name,avatar_url,verified_at)",
             "order": "created_at.desc",
         },
     )
@@ -58,7 +58,7 @@ def list_following(user_id):
         "GET", "follows",
         params={
             "follower_id": f"eq.{user_id}",
-            "select": "created_at,followed:users(id,full_name,avatar_url,verified_at)",
+            "select": "created_at,followed:users!follows_followed_id_fkey(id,full_name,avatar_url,verified_at)",
             "order": "created_at.desc",
         },
     )
