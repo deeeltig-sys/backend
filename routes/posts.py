@@ -211,6 +211,74 @@ def feed():
     return jsonify(data), 200
 
 
+@bp.get("/explore")
+@optional_auth
+def explore():
+    """Discovery feed — the Explore/Discover role IG's search tab plays:
+    content from OUTSIDE the caller's own network, ranked by raw
+    engagement rather than personal affinity (we don't know this
+    audience yet), and diversified round-robin by author so the grid
+    doesn't read as one person's or one campus's feed on repeat."""
+    limit = min(int(request.args.get("limit", 30)), 60)
+
+    data, status = rest_request(
+        "GET", "feed",
+        params={
+            "select": "*",
+            "order": "reaction_count.desc,view_count.desc,created_at.desc",
+            "limit": limit * 3,  # over-fetch so the diversity pass has room to work with
+        },
+    )
+    if status != 200:
+        return jsonify({"error": "could not load explore"}), status
+
+    posts = _filter_blocked(data or [], g.token)
+
+    if g.user_id:
+        following, fstatus = rest_request(
+            "GET", "follows", token=g.token,
+            params={"follower_id": f"eq.{g.user_id}", "select": "following_id"},
+        )
+        friends, frstatus = rest_request(
+            "GET", "friendships", token=g.token,
+            params={"or": f"(user_a.eq.{g.user_id},user_b.eq.{g.user_id})", "select": "user_a,user_b"},
+        )
+        known_ids = {g.user_id}
+        if fstatus == 200:
+            known_ids.update(r["following_id"] for r in (following or []))
+        if frstatus == 200:
+            for r in (friends or []):
+                known_ids.add(r.get("user_a"))
+                known_ids.add(r.get("user_b"))
+        posts = [p for p in posts if p.get("author_id") not in known_ids]
+
+    # Round-robin by author so no single voice dominates the grid.
+    buckets = {}
+    order_seen = []
+    for p in posts:
+        aid = p.get("author_id")
+        if aid not in buckets:
+            buckets[aid] = []
+            order_seen.append(aid)
+        buckets[aid].append(p)
+
+    diversified = []
+    while len(diversified) < limit and order_seen:
+        for aid in list(order_seen):
+            bucket = buckets[aid]
+            if bucket:
+                diversified.append(bucket.pop(0))
+            if not bucket:
+                order_seen.remove(aid)
+            if len(diversified) >= limit:
+                break
+
+    _attach_user_reactions(diversified, g.token)
+    _attach_original_posts(diversified, g.token)
+    _attach_polls(diversified, g.token)
+    return jsonify(diversified), 200
+
+
 @bp.get("/search")
 def search_posts():
     """Simple ILIKE search over post content, scoped to the same

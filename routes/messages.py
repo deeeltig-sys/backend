@@ -363,6 +363,37 @@ def clear_conversation(conversation_id):
     return jsonify({"cleared": True}), 200
 
 
+@bp.post("/<conversation_id>/typing")
+@require_auth
+def set_typing(conversation_id):
+    """Called on keystroke (debounced client-side) with {typing: true},
+    and once on blur/send/close with {typing: false}. Cheap by design —
+    just an upsert of a timestamp, no new tables beyond one column."""
+    body = request.get_json(silent=True) or {}
+    typing = bool(body.get("typing"))
+    data, status = rpc(
+        "set_typing", token=g.token,
+        payload={"p_conversation_id": conversation_id, "p_typing": typing},
+    )
+    if status >= 400:
+        return jsonify({"error": "could not update typing status"}), status
+    return jsonify({"typing": typing}), 200
+
+
+@bp.get("/<conversation_id>/typing")
+@require_auth
+def get_typing(conversation_id):
+    """Polled every few seconds while a thread is open — true if the
+    OTHER participant pinged /typing in roughly the last 6 seconds."""
+    data, status = rpc(
+        "get_other_typing", token=g.token,
+        payload={"p_conversation_id": conversation_id},
+    )
+    if status >= 400:
+        return jsonify({"error": "could not load typing status"}), status
+    return jsonify({"typing": bool(data)}), 200
+
+
 @bp.patch("/<conversation_id>/wallpaper")
 @require_auth
 def set_wallpaper(conversation_id):
