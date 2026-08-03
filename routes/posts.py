@@ -4,16 +4,12 @@ from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, rpc, storage_upload
 from lib.decorators import require_auth, optional_auth
 from lib.watermark import apply_watermark
+from lib.image_processing import normalize_image, UnsupportedImageError
 from models.post import validate_post_content
 
 bp = Blueprint("posts", __name__, url_prefix="/api/posts")
 
 MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 6MB
-ALLOWED_IMAGE_TYPES = {
-    "image/jpeg": "jpg",
-    "image/png": "png",
-    "image/webp": "webp",
-}
 
 
 def _bearer_token_if_present():
@@ -78,20 +74,20 @@ def upload_image():
         return jsonify({"error": "attach an image file under the 'image' field"}), 400
 
     file = request.files["image"]
-    content_type = file.mimetype
-    if content_type not in ALLOWED_IMAGE_TYPES:
-        return jsonify({"error": "only JPEG, PNG, or WEBP images are supported"}), 400
-
     file_bytes = file.read()
     if len(file_bytes) > MAX_IMAGE_BYTES:
         return jsonify({"error": "image must be under 6MB"}), 400
+
+    try:
+        file_bytes, content_type, extension = normalize_image(file_bytes)
+    except UnsupportedImageError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     # Stamp before upload — every post image gets the mark, not just an
     # opt-in, so it's consistent across the whole platform. Uses the
     # original bytes as a fallback if watermarking hits any error.
     file_bytes = apply_watermark(file_bytes, content_type)
 
-    extension = ALLOWED_IMAGE_TYPES[content_type]
     path = f"{g.user_id}/{uuid.uuid4().hex}.{extension}"
 
     data, status = storage_upload("post-images", path, file_bytes, content_type, g.token)

@@ -3,16 +3,12 @@ import uuid
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, storage_upload
 from lib.decorators import require_auth, optional_auth
+from lib.image_processing import normalize_image, UnsupportedImageError
 from models.user import sanitize_social_links, sanitize_bio, sanitize_level_of_study, public_user_fields
 
 bp = Blueprint("profile", __name__, url_prefix="/api/profile")
 
 MAX_AVATAR_BYTES = 4 * 1024 * 1024  # 4MB — smaller cap than post images, it's a thumbnail
-ALLOWED_AVATAR_TYPES = {
-    "image/jpeg": "jpg",
-    "image/png": "png",
-    "image/webp": "webp",
-}
 
 
 @bp.get("/<user_id>")
@@ -60,15 +56,15 @@ def upload_avatar():
         return jsonify({"error": "attach an image file under the 'avatar' field"}), 400
 
     file = request.files["avatar"]
-    content_type = file.mimetype
-    if content_type not in ALLOWED_AVATAR_TYPES:
-        return jsonify({"error": "only JPEG, PNG, or WEBP images are supported"}), 400
-
     file_bytes = file.read()
     if len(file_bytes) > MAX_AVATAR_BYTES:
         return jsonify({"error": "image must be under 4MB"}), 400
 
-    extension = ALLOWED_AVATAR_TYPES[content_type]
+    try:
+        file_bytes, content_type, extension = normalize_image(file_bytes)
+    except UnsupportedImageError as exc:
+        return jsonify({"error": str(exc)}), 400
+
     # Fixed filename per user (not a fresh uuid each time) so a
     # re-upload overwrites the old avatar instead of orphaning it in
     # storage — the update policy in avatar_storage_policies.sql

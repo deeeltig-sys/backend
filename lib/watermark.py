@@ -64,8 +64,6 @@ def apply_watermark(file_bytes: bytes, content_type: str) -> bytes:
         out = io.BytesIO()
         if content_type == "image/png":
             watermarked.save(out, format="PNG")
-        elif content_type == "image/webp":
-            watermarked.convert("RGB").save(out, format="WEBP", quality=90)
         else:  # image/jpeg — no alpha channel support
             watermarked.convert("RGB").save(out, format="JPEG", quality=90)
         return out.getvalue()

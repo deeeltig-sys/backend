@@ -4,11 +4,11 @@ from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, storage_upload
 from lib.decorators import require_auth
 from lib.watermark import apply_watermark
+from lib.image_processing import normalize_image, UnsupportedImageError
 
 bp = Blueprint("statuses", __name__, url_prefix="/api/statuses")
 
 MAX_IMAGE_BYTES = 6 * 1024 * 1024
-ALLOWED_IMAGE_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
 MAX_TEXT_LENGTH = 280
 
 
@@ -22,15 +22,16 @@ def upload_status_image():
     if "image" not in request.files:
         return jsonify({"error": "attach an image file under the 'image' field"}), 400
     file = request.files["image"]
-    content_type = file.mimetype
-    if content_type not in ALLOWED_IMAGE_TYPES:
-        return jsonify({"error": "only JPEG, PNG, or WEBP images are supported"}), 400
     file_bytes = file.read()
     if len(file_bytes) > MAX_IMAGE_BYTES:
         return jsonify({"error": "image must be under 6MB"}), 400
 
+    try:
+        file_bytes, content_type, extension = normalize_image(file_bytes)
+    except UnsupportedImageError as exc:
+        return jsonify({"error": str(exc)}), 400
+
     file_bytes = apply_watermark(file_bytes, content_type)
-    extension = ALLOWED_IMAGE_TYPES[content_type]
     path = f"{g.user_id}/status/{uuid.uuid4().hex}.{extension}"
 
     data, status = storage_upload("post-images", path, file_bytes, content_type, g.token)
