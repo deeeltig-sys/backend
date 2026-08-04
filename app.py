@@ -23,6 +23,7 @@ from routes.friends import bp as friends_bp
 from routes.groups import bp as groups_bp
 from routes.events import bp as events_bp
 from routes.highlights import bp as highlights_bp
+from routes.push import bp as push_bp
 
 
 def create_app():
@@ -52,6 +53,7 @@ def create_app():
     app.register_blueprint(groups_bp)
     app.register_blueprint(events_bp)
     app.register_blueprint(highlights_bp)
+    app.register_blueprint(push_bp)
 
     @app.get("/")
     def health():

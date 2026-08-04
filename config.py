@@ -21,6 +21,15 @@ class Config:
     )
     FLASK_ENV = os.environ.get("FLASK_ENV", "production")
 
+    # Web push — see routes/push.py and db/push_migration.sql. The
+    # webhook secret is checked on /api/push/send since that endpoint
+    # has no signed-in user at all (it's called by a Postgres trigger
+    # via pg_net, not by the frontend).
+    VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
+    VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
+    VAPID_CLAIMS_EMAIL = os.environ.get("VAPID_CLAIMS_EMAIL", "admin@campusmeetx.netlify.app")
+    PUSH_WEBHOOK_SECRET = os.environ.get("PUSH_WEBHOOK_SECRET", "")
+
     @classmethod
     def validate(cls):
         missing = [k for k in ("SUPABASE_URL", "SUPABASE_ANON_KEY") if not getattr(cls, k)]

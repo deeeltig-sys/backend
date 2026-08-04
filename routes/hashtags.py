@@ -1,8 +1,9 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request
+from lib.decorators import optional_auth
 from routes.posts import (
-    _bearer_token_if_present,
     _filter_blocked,
+    _filter_by_audience,
     _attach_user_reactions,
     _attach_original_posts,
     _attach_polls,
@@ -36,6 +37,7 @@ def trending():
 
 
 @bp.get("/<tag>/posts")
+@optional_auth
 def posts_for_hashtag(tag):
     """Every active post carrying this tag, newest first. Same
     post_id -> feed lookup pattern as PostsAPI.saved() in posts.py,
@@ -78,12 +80,12 @@ def posts_for_hashtag(tag):
     by_id = {p["id"]: p for p in (posts_data or [])}
     ordered = [by_id[pid] for pid in post_ids if pid in by_id]  # preserves tagged-order, not feed's random order
 
-    token = _bearer_token_if_present()
-    ordered = _filter_blocked(ordered, token)
-    _attach_user_reactions(ordered, token)
-    _attach_original_posts(ordered, token)
-    _attach_polls(ordered, token)
-    _attach_mentions(ordered, token)
-    _attach_images(ordered, token)
+    ordered = _filter_blocked(ordered, g.token)
+    ordered = _filter_by_audience(ordered, g.user_id, g.token)
+    _attach_user_reactions(ordered, g.token)
+    _attach_original_posts(ordered, g.token)
+    _attach_polls(ordered, g.token)
+    _attach_mentions(ordered, g.token)
+    _attach_images(ordered, g.token)
 
     return jsonify({"tag": clean, "post_count": hashtag[0]["post_count"], "posts": ordered}), 200

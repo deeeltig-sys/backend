@@ -6,6 +6,7 @@ from lib.decorators import require_auth, optional_auth
 from lib.watermark import apply_watermark
 from lib.image_processing import normalize_image, UnsupportedImageError
 from models.post import validate_post_content
+from routes.friends import _friend_ids
 
 bp = Blueprint("posts", __name__, url_prefix="/api/posts")
 
@@ -59,6 +60,25 @@ def _filter_blocked(posts, token):
     if not blocked:
         return posts
     return [p for p in posts if p.get("author_id") not in blocked]
+
+
+def _filter_by_audience(posts, viewer_id, token):
+    """Removes 'friends'-only posts the viewer isn't allowed to see.
+    A post's own author always sees it regardless of audience. Same
+    app-level filtering model as _filter_blocked above — the `feed`
+    view itself stays broad; this narrows what actually gets returned
+    to this particular viewer, rather than enforcing it via RLS on
+    the view (see db/audience_migration.sql for why)."""
+    if not posts:
+        return posts
+    needs_check = [p for p in posts if p.get("audience") == "friends" and p.get("author_id") != viewer_id]
+    if not needs_check:
+        return posts
+    friend_ids = set(_friend_ids(viewer_id, token)) if viewer_id else set()
+    return [
+        p for p in posts
+        if p.get("audience") != "friends" or p.get("author_id") == viewer_id or p.get("author_id") in friend_ids
+    ]
 
 
 @bp.post("/upload-image")
@@ -261,6 +281,7 @@ def feed():
         return jsonify({"error": "could not load feed"}), status
 
     data = _filter_blocked(data, g.token)
+    data = _filter_by_audience(data, g.user_id, g.token)
     _attach_user_reactions(data, g.token)
     _attach_original_posts(data, g.token)
     _attach_polls(data, g.token)
@@ -291,6 +312,7 @@ def explore():
         return jsonify({"error": "could not load explore"}), status
 
     posts = _filter_blocked(data or [], g.token)
+    posts = _filter_by_audience(posts, g.user_id, g.token)
 
     if g.user_id:
         following, fstatus = rest_request(
@@ -340,6 +362,7 @@ def explore():
 
 
 @bp.get("/search")
+@optional_auth
 def search_posts():
     """Simple ILIKE search over post content, scoped to the same
     active-only `feed` view so results carry author info and
@@ -361,13 +384,13 @@ def search_posts():
     if status != 200:
         return jsonify({"error": "search failed"}), status
 
-    token = _bearer_token_if_present()
-    data = _filter_blocked(data, token)
-    _attach_user_reactions(data, token)
-    _attach_original_posts(data, token)
-    _attach_polls(data, token)
-    _attach_mentions(data, token)
-    _attach_images(data, token)
+    data = _filter_blocked(data, g.token)
+    data = _filter_by_audience(data, g.user_id, g.token)
+    _attach_user_reactions(data, g.token)
+    _attach_original_posts(data, g.token)
+    _attach_polls(data, g.token)
+    _attach_mentions(data, g.token)
+    _attach_images(data, g.token)
     return jsonify(data), 200
 
 
@@ -386,6 +409,10 @@ def create_post():
     group_id = body.get("group_id")
     poll_options = body.get("poll_options")
     mentioned_user_ids = body.get("mentioned_user_ids")
+    audience = body.get("audience", "public")
+
+    if audience not in ("public", "friends"):
+        return jsonify({"error": "audience must be 'public' or 'friends'"}), 400
 
     if image_urls is not None:
         if not isinstance(image_urls, list) or not image_urls:
@@ -464,6 +491,7 @@ def create_post():
         "image_url": image_url,
         "repost_of": repost_of,
         "group_id": group_id,
+        "audience": audience,
     }
     data, status = rest_request(
         "POST", "posts", token=g.token, json_body=payload, prefer="return=representation",
@@ -512,17 +540,22 @@ def create_post():
 
 
 @bp.get("/<post_id>")
+@optional_auth
 def get_post(post_id):
     data, status = rest_request("GET", "feed", params={"id": f"eq.{post_id}", "select": "*"})
     if status != 200 or not data:
         return jsonify({"error": "post not found"}), 404
 
-    token = _bearer_token_if_present()
-    _attach_user_reactions(data, token)
-    _attach_original_posts(data, token)
-    _attach_polls(data, token)
-    _attach_mentions(data, token)
-    _attach_images(data, token)
+    data = _filter_blocked(data, g.token)
+    data = _filter_by_audience(data, g.user_id, g.token)
+    if not data:
+        return jsonify({"error": "post not found"}), 404
+
+    _attach_user_reactions(data, g.token)
+    _attach_original_posts(data, g.token)
+    _attach_polls(data, g.token)
+    _attach_mentions(data, g.token)
+    _attach_images(data, g.token)
     return jsonify(data[0]), 200
 
 
@@ -618,6 +651,7 @@ def register_search_hit(post_id):
 
 
 @bp.get("/by-user/<user_id>")
+@optional_auth
 def posts_by_user(user_id):
     """Powers the profile grid — every active post from one author,
     newest first. Reuses the same `feed` view as the main feed (so
@@ -635,13 +669,13 @@ def posts_by_user(user_id):
     if status != 200:
         return jsonify({"error": "could not load posts"}), status
 
-    token = _bearer_token_if_present()
-    data = _filter_blocked(data, token)
-    _attach_user_reactions(data, token)
-    _attach_original_posts(data, token)
-    _attach_polls(data, token)
-    _attach_mentions(data, token)
-    _attach_images(data, token)
+    data = _filter_blocked(data, g.token)
+    data = _filter_by_audience(data, g.user_id, g.token)
+    _attach_user_reactions(data, g.token)
+    _attach_original_posts(data, g.token)
+    _attach_polls(data, g.token)
+    _attach_mentions(data, g.token)
+    _attach_images(data, g.token)
     return jsonify(data), 200
 
 
@@ -696,6 +730,7 @@ def list_saved():
     by_id = {p["id"]: p for p in (posts_data or [])}
     ordered = [by_id[pid] for pid in post_ids if pid in by_id]  # preserves save-order, not feed's random order
     ordered = _filter_blocked(ordered, g.token)
+    ordered = _filter_by_audience(ordered, g.user_id, g.token)
     _attach_user_reactions(ordered, g.token)
     _attach_original_posts(ordered, g.token)
     _attach_polls(ordered, g.token)

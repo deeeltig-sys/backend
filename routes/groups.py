@@ -5,8 +5,8 @@ from lib.supabase_client import rest_request, storage_upload
 from lib.decorators import require_auth, optional_auth
 from lib.image_processing import normalize_image, UnsupportedImageError
 from routes.posts import (
-    _bearer_token_if_present,
     _filter_blocked,
+    _filter_by_audience,
     _attach_user_reactions,
     _attach_original_posts,
     _attach_polls,
@@ -243,13 +243,13 @@ def group_posts(group_id):
     if status != 200:
         return jsonify({"error": "could not load group posts"}), status
 
-    token = _bearer_token_if_present()
-    data = _filter_blocked(data, token)
-    _attach_user_reactions(data, token)
-    _attach_original_posts(data, token)
-    _attach_polls(data, token)
-    _attach_mentions(data, token)
-    _attach_images(data, token)
+    data = _filter_blocked(data, g.token)
+    data = _filter_by_audience(data, g.user_id, g.token)
+    _attach_user_reactions(data, g.token)
+    _attach_original_posts(data, g.token)
+    _attach_polls(data, g.token)
+    _attach_mentions(data, g.token)
+    _attach_images(data, g.token)
     return jsonify(data), 200
 
 

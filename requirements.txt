@@ -5,4 +5,5 @@ requests==2.32.3
 gunicorn==22.0.0
 Pillow==10.4.0
 pillow-heif==0.18.0
+pywebpush==2.0.1
 Flask-Limiter==3.8.0
