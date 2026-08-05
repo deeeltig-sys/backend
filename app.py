@@ -24,6 +24,8 @@ from routes.groups import bp as groups_bp
 from routes.events import bp as events_bp
 from routes.highlights import bp as highlights_bp
 from routes.push import bp as push_bp
+from routes.badges import bp as badges_bp
+from routes.quests import bp as quests_bp
 
 
 def create_app():
@@ -54,6 +56,8 @@ def create_app():
     app.register_blueprint(events_bp)
     app.register_blueprint(highlights_bp)
     app.register_blueprint(push_bp)
+    app.register_blueprint(badges_bp)
+    app.register_blueprint(quests_bp)
 
     @app.get("/")
     def health():
