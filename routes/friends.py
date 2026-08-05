@@ -104,7 +104,9 @@ def send_request(user_id):
         msg = (data or {}).get("message", "") if isinstance(data, dict) else ""
         if "already friends" in msg:
             return jsonify({"error": "already friends"}), 409
-        return jsonify({"error": "could not send friend request"}), status
+        # TEMP DEBUG — remove after diagnosing: surfaces the real
+        # PostgREST/Postgres error instead of the generic message.
+        return jsonify({"error": "could not send friend request", "debug": data}), status
     return jsonify({"sent": True}), 201
 
 
