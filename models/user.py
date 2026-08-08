@@ -59,6 +59,21 @@ def sanitize_bio(raw) -> str | None:
     return trimmed[:MAX_BIO_LENGTH]
 
 
+MAX_FULL_NAME_LENGTH = 80
+
+
+def sanitize_full_name(raw) -> str | None:
+    """Trims and caps a display name. Unlike bio, an empty result here
+    is never valid — the caller (routes/profile.py) rejects the request
+    outright rather than silently clearing the name, since a user must
+    always have *some* name, real or a nickname. No format restriction
+    beyond that: nicknames are explicitly allowed, not just legal names."""
+    if raw is None or not isinstance(raw, str):
+        return None
+    trimmed = raw.strip()
+    return trimmed[:MAX_FULL_NAME_LENGTH] if trimmed else None
+
+
 MAX_LEVEL_LENGTH = 40  # matches the users_level_of_study_length check constraint
 
 

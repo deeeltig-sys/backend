@@ -3,7 +3,7 @@ import uuid
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, storage_upload
 from lib.decorators import require_auth, optional_auth
-from models.user import sanitize_social_links, sanitize_bio, sanitize_level_of_study, public_user_fields
+from models.user import sanitize_social_links, sanitize_bio, sanitize_level_of_study, sanitize_full_name, public_user_fields
 
 bp = Blueprint("profile", __name__, url_prefix="/api/profile")
 
@@ -120,6 +120,15 @@ def update_own_profile():
     body = request.get_json(silent=True) or {}
     allowed_fields = {"full_name", "avatar_url", "social_links", "bio", "level_of_study", "default_wallpaper", "default_wallpaper_url"}
     updates = {k: v for k, v in body.items() if k in allowed_fields}
+
+    if "full_name" in updates:
+        # Both nicknames and real names are valid — no format check
+        # beyond non-empty. An empty/whitespace-only name is rejected
+        # outright rather than silently dropped, so a user can never
+        # end up with nothing as their name.
+        updates["full_name"] = sanitize_full_name(updates["full_name"])
+        if not updates["full_name"]:
+            return jsonify({"error": "name cannot be empty"}), 400
 
     if "social_links" in updates:
         # Never trust the raw payload straight into Postgres — strip

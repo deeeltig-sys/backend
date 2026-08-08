@@ -155,6 +155,30 @@ def list_conversations():
                         row["last_message_status"] = "read" if m.get("read_at") else "sent"
                     else:
                         row["last_message_status"] = None
+
+        # Per-conversation unread count — a dedicated query rather than
+        # reusing the latest-messages batch above, since that batch is
+        # capped and not guaranteed to hold every unread message in a
+        # conversation with a long unread backlog.
+        unread_data, unread_status = rest_request(
+            "GET", "messages", token=g.token,
+            params={
+                "conversation_id": f"in.({','.join(result_ids)})",
+                "recipient_id": f"eq.{g.user_id}",
+                "read_at": "is.null",
+                "select": "conversation_id",
+            },
+        )
+        if unread_status == 200:
+            unread_counts = {}
+            for m in unread_data or []:
+                cid = m["conversation_id"]
+                unread_counts[cid] = unread_counts.get(cid, 0) + 1
+            for row in result:
+                row["unread_count"] = unread_counts.get(row["id"], 0)
+        else:
+            for row in result:
+                row["unread_count"] = 0
     return jsonify(result), 200
 
 
