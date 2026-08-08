@@ -682,10 +682,12 @@ def posts_by_user(user_id):
 @bp.post("/<post_id>/save")
 @require_auth
 def save_post(post_id):
+    body = request.get_json(silent=True) or {}
+    collection_id = body.get("collection_id")  # optional — null means uncategorized
     data, status = rest_request(
         "POST", "saved_posts", token=g.token,
-        json_body={"user_id": g.user_id, "post_id": post_id},
-        prefer="resolution=ignore-duplicates",
+        json_body={"user_id": g.user_id, "post_id": post_id, "collection_id": collection_id},
+        prefer="resolution=merge-duplicates",
     )
     if status >= 400:
         return jsonify({"error": "could not save post"}), status
@@ -708,13 +710,20 @@ def unsave_post(post_id):
 @require_auth
 def list_saved():
     """Powers the Saved tab on Profile — every post the caller has
-    bookmarked, most recent save first. Joins back through `feed` so
-    the shape matches everywhere else a post gets rendered (author
-    info, score, comment_count all included)."""
-    saved, status = rest_request(
-        "GET", "saved_posts", token=g.token,
-        params={"user_id": f"eq.{g.user_id}", "select": "post_id,created_at", "order": "created_at.desc"},
-    )
+    bookmarked, most recent save first. Optional ?collection_id=
+    narrows to one folder; omit it (or pass ?collection_id=none) to
+    mean 'everything', matching how save_post treats a null
+    collection_id as uncategorized rather than invalid. Joins back
+    through `feed` so the shape matches everywhere else a post gets
+    rendered (author info, score, comment_count all included)."""
+    collection_id = request.args.get("collection_id")
+    params = {"user_id": f"eq.{g.user_id}", "select": "post_id,created_at", "order": "created_at.desc"}
+    if collection_id == "none":
+        params["collection_id"] = "is.null"
+    elif collection_id:
+        params["collection_id"] = f"eq.{collection_id}"
+
+    saved, status = rest_request("GET", "saved_posts", token=g.token, params=params)
     if status != 200:
         return jsonify({"error": "could not load saved posts"}), status
     if not saved:

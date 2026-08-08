@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import (
     auth_signup, auth_login, auth_refresh, auth_recover,
-    auth_update_password, auth_delete_self, rest_request,
+    auth_update_password, auth_delete_self, rest_request, rpc,
 )
 from lib.decorators import require_auth
 from lib.limiter import limiter
@@ -27,6 +27,11 @@ def signup():
     full_name = (body.get("full_name") or "").strip()
     university_id = (body.get("university_id") or "").strip() or None
     university_name = (body.get("university_name") or "").strip() or None
+    # From a shared post link's ?ref=<user_id>. Not trusted here — the
+    # signup trigger only honors it if that id actually exists in
+    # users, so a malformed/fake value just falls back to no referrer
+    # rather than breaking signup.
+    referred_by = (body.get("referred_by") or "").strip() or None
 
     if not email or "@" not in email:
         return jsonify({"error": "a valid email is required"}), 400
@@ -37,7 +42,7 @@ def signup():
     if not university_id and not university_name:
         return jsonify({"error": "university is required"}), 400
 
-    data, status = auth_signup(email, password, full_name, university_id, university_name)
+    data, status = auth_signup(email, password, full_name, university_id, university_name, referred_by)
 
     if status >= 400:
         msg = (data or {}).get("msg") or (data or {}).get("error_description") or "signup failed"
@@ -91,6 +96,15 @@ def me():
 
     row = data[0]
     row["university_name"] = (row.pop("university", None) or {}).get("name")
+
+    standing, standing_status = rpc("my_weekly_standing", token=g.token)
+    if standing_status == 200 and standing:
+        row["weekly_points"] = standing[0]["points"]
+        row["weekly_rank"] = standing[0]["rank"]
+        row["points_tier"] = standing[0]["tier"]
+    else:
+        row["weekly_points"], row["weekly_rank"], row["points_tier"] = 0, None, "Newcomer"
+
     return jsonify(row), 200
 
 

@@ -104,7 +104,7 @@ def rpc(function_name: str, token: str | None = None, payload: dict | None = Non
 # frontend shape stays a direct mirror of Supabase's own response.
 # ---------------------------------------------------------------
 
-def auth_signup(email: str, password: str, full_name: str, university_id: str = None, university_name: str = None):
+def auth_signup(email: str, password: str, full_name: str, university_id: str = None, university_name: str = None, referred_by: str = None):
     url = f"{Config.SUPABASE_URL}/auth/v1/signup"
     response = requests.post(
         url,
@@ -116,6 +116,7 @@ def auth_signup(email: str, password: str, full_name: str, university_id: str = 
                 "full_name": full_name,
                 "university_id": university_id,
                 "university_name": university_name,
+                "referred_by": referred_by,
             },
         },
         timeout=REQUEST_TIMEOUT,
