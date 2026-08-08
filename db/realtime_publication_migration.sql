@@ -1,0 +1,12 @@
+-- Enables Supabase Realtime (Postgres logical replication over
+-- websockets) for the messages table. Without this, postgres_changes
+-- subscriptions on `messages` from the frontend never fire — the
+-- table exists and RLS already protects it, it just isn't part of the
+-- publication Realtime listens to.
+--
+-- RLS still applies to realtime the same as it does to a normal
+-- PostgREST request: messages_select_own (v3_social_migration.sql)
+-- already restricts SELECT to participants of the conversation, and
+-- Realtime enforces that using the same JWT passed in on the socket
+-- connection. No new policy needed here.
+alter publication supabase_realtime add table messages;

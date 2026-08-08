@@ -158,13 +158,19 @@ def list_conversations():
 
         # Per-conversation unread count — a dedicated query rather than
         # reusing the latest-messages batch above, since that batch is
+        # Per-conversation unread count — a dedicated query rather than
+        # reusing the latest-messages batch above, since that batch is
         # capped and not guaranteed to hold every unread message in a
-        # conversation with a long unread backlog.
+        # conversation with a long unread backlog. `messages` has no
+        # recipient_id column (that's only on `notifications`) — the
+        # recipient of a DM is just "whoever didn't send it", so unread
+        # is sender_id != me AND read_at is null, scoped to my own
+        # conversation ids (RLS also enforces that boundary).
         unread_data, unread_status = rest_request(
             "GET", "messages", token=g.token,
             params={
                 "conversation_id": f"in.({','.join(result_ids)})",
-                "recipient_id": f"eq.{g.user_id}",
+                "sender_id": f"neq.{g.user_id}",
                 "read_at": "is.null",
                 "select": "conversation_id",
             },
@@ -186,17 +192,35 @@ def list_conversations():
 @require_auth
 def unread_message_count():
     """Get count of unread messages received by the current user.
-    
+
     Returns: {"count": N}
-    
+
     A message is unread if:
     1. The current user is the recipient (not the sender)
     2. The message has no read_at timestamp
+
+    NOTE: this used to filter on messages.recipient_id, which doesn't
+    exist on this table (only notifications has that column) — every
+    call was silently erroring, which is why the Chats badge in
+    BottomNav.jsx never actually lit up. Fixed to derive "recipient"
+    the same way the rest of this file does: whoever didn't send it,
+    scoped to conversations the caller is actually part of.
     """
+    conv_data, conv_status = rest_request(
+        "GET", "conversations", token=g.token,
+        params={"or": f"(user_a.eq.{g.user_id},user_b.eq.{g.user_id})", "select": "id"},
+    )
+    if conv_status != 200:
+        return jsonify({"error": "could not load unread count"}), conv_status
+    conv_ids = [c["id"] for c in conv_data or []]
+    if not conv_ids:
+        return jsonify({"count": 0}), 200
+
     data, status = rest_request(
         "GET", "messages", token=g.token,
         params={
-            "recipient_id": f"eq.{g.user_id}",
+            "conversation_id": f"in.({','.join(conv_ids)})",
+            "sender_id": f"neq.{g.user_id}",
             "read_at": "is.null",
             "select": "id",
         },
