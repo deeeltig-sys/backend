@@ -274,7 +274,12 @@ def feed():
         )
         university_id = (me or [{}])[0].get("university_id") if me_status == 200 else None
         if university_id:
-            params["university_id"] = f"eq.{university_id}"
+            # An Okyeame announcement has to reach every campus, not
+            # just whichever university that account happens to be
+            # registered under — so campus-scoping is "my university,
+            # OR it's an official post" rather than a plain equality
+            # filter. See db/okyeame_migration.sql for author_is_official.
+            params["or"] = f"(university_id.eq.{university_id},author_is_official.eq.true)"
 
     data, status = rest_request("GET", "feed", params=params)
     if status != 200:

@@ -29,6 +29,7 @@ from routes.quests import bp as quests_bp
 from routes.public import bp as public_bp
 from routes.leaderboard import bp as leaderboard_bp
 from routes.collections import bp as collections_bp
+from routes.okyeame import bp as okyeame_bp
 
 
 def create_app():
@@ -64,6 +65,7 @@ def create_app():
     app.register_blueprint(public_bp)
     app.register_blueprint(leaderboard_bp)
     app.register_blueprint(collections_bp)
+    app.register_blueprint(okyeame_bp)
 
     @app.get("/")
     def health():

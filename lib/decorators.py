@@ -126,3 +126,35 @@ def require_admin(fn):
         return fn(*args, **kwargs)
 
     return wrapper
+
+
+def require_owner(fn):
+    """Strictly is_owner = true — not role-based at all, deliberately
+    separate from require_admin/require_staff. Every team admin still
+    gets a normal 403 here even though they pass @require_admin
+    elsewhere; only the one user row with is_owner set (see
+    db/okyeame_migration.sql — set by hand in the SQL editor, never
+    through any endpoint) gets through. Used for Okyeame announcements
+    and writing to CampusMEET HQ."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        token = _extract_bearer_token()
+        if not token:
+            return jsonify({"error": "sign in required"}), 401
+
+        user, status = auth_get_user(token)
+        if status != 200 or not user or not user.get("id"):
+            return jsonify({"error": "session expired, sign in again"}), 401
+
+        profile, pstatus = rest_request(
+            "GET", "users", token=token,
+            params={"id": f"eq.{user['id']}", "select": "is_owner"},
+        )
+        if pstatus != 200 or not profile or not profile[0].get("is_owner"):
+            return jsonify({"error": "not authorized"}), 403
+
+        g.token = token
+        g.user_id = user["id"]
+        return fn(*args, **kwargs)
+
+    return wrapper
