@@ -83,10 +83,10 @@ begin
   -- this is live, not a correctness issue today).
   for sub in select endpoint, p256dh, auth_key from push_subscriptions where user_id = new.recipient_id loop
     perform net.http_post(
-      url := 'YOUR_BACKEND_URL/api/push/send',
+      url := 'https://campus-backend-tz9q.onrender.com/api/push/send',
       headers := jsonb_build_object(
         'Content-Type', 'application/json',
-        'X-Webhook-Secret', 'YOUR_SHARED_SECRET'
+        'X-Webhook-Secret', 'pnPTdCxlYFD1rrKHmYhyQICon43AYsKvR1T1CtaMfNo'
       ),
       body := jsonb_build_object(
         'endpoint', sub.endpoint, 'p256dh', sub.p256dh, 'auth', sub.auth_key,

@@ -60,18 +60,34 @@ def sanitize_bio(raw) -> str | None:
 
 
 MAX_FULL_NAME_LENGTH = 80
+MIN_FULL_NAME_LENGTH = 3  # rejects bare initials like "J." or "AB"
 
 
 def sanitize_full_name(raw) -> str | None:
-    """Trims and caps a display name. Unlike bio, an empty result here
-    is never valid — the caller (routes/profile.py) rejects the request
-    outright rather than silently clearing the name, since a user must
-    always have *some* name, real or a nickname. No format restriction
-    beyond that: nicknames are explicitly allowed, not just legal names."""
+    """Trims and caps a display name, and rejects names that aren't
+    actually names. Returns None for anything invalid — the caller
+    (routes/profile.py) treats None as a rejection and returns a 400
+    with a clear reason, rather than silently accepting or clearing
+    the name, since a user must always have *some* real name or
+    nickname on the platform.
+
+    What's rejected and why:
+      - shorter than MIN_FULL_NAME_LENGTH after trimming — blocks bare
+        initials ("J.", "AB") that make a profile impossible to
+        recognize in a feed or friends list
+      - entirely digits, or containing no letters at all — blocks
+        someone setting their name to "12345" or similar
+    Nicknames are explicitly still allowed — "Makaveli", "Bless", a
+    single word is fine. This only filters out things that aren't
+    names at all, not legal-name-only enforcement."""
     if raw is None or not isinstance(raw, str):
         return None
     trimmed = raw.strip()
-    return trimmed[:MAX_FULL_NAME_LENGTH] if trimmed else None
+    if len(trimmed) < MIN_FULL_NAME_LENGTH:
+        return None
+    if not any(ch.isalpha() for ch in trimmed):
+        return None
+    return trimmed[:MAX_FULL_NAME_LENGTH]
 
 
 MAX_LEVEL_LENGTH = 40  # matches the users_level_of_study_length check constraint

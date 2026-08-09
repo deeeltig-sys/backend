@@ -4,7 +4,7 @@ from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, storage_upload
 from lib.decorators import require_auth, optional_auth
 from lib.image_processing import normalize_image, UnsupportedImageError
-from models.user import sanitize_social_links, sanitize_bio, sanitize_level_of_study, public_user_fields
+from models.user import sanitize_social_links, sanitize_bio, sanitize_level_of_study, sanitize_full_name, public_user_fields
 
 bp = Blueprint("profile", __name__, url_prefix="/api/profile")
 
@@ -96,6 +96,16 @@ def update_own_profile():
     body = request.get_json(silent=True) or {}
     allowed_fields = {"full_name", "avatar_url", "social_links", "bio", "level_of_study", "default_wallpaper", "default_wallpaper_url"}
     updates = {k: v for k, v in body.items() if k in allowed_fields}
+
+    if "full_name" in updates:
+        # Was previously passed straight through with zero validation —
+        # a user could set their name to "AB" or "12345". Rejected
+        # outright with a 400 rather than silently dropped, so the
+        # frontend can show the person exactly why it didn't save.
+        clean_name = sanitize_full_name(updates["full_name"])
+        if clean_name is None:
+            return jsonify({"error": "Please enter your real name or a nickname — at least 3 characters, with real letters in it."}), 400
+        updates["full_name"] = clean_name
 
     if "social_links" in updates:
         # Never trust the raw payload straight into Postgres — strip
