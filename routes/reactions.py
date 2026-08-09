@@ -51,6 +51,7 @@ def set_reaction(post_id):
     payload = {"post_id": post_id, "user_id": g.user_id, "type": reaction_type}
     data, status = rest_request(
         "POST", "reactions", token=g.token, json_body=payload,
+        params={"on_conflict": "post_id,user_id"},
         prefer="return=representation,resolution=merge-duplicates",
     )
     if status >= 400:
