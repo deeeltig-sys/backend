@@ -21,7 +21,7 @@ create extension if not exists "uuid-ossp";
 create type user_role      as enum ('student','moderator','admin');
 create type user_status    as enum ('active','suspended','deactivated');
 create type post_status    as enum ('active','removed','flagged');
-create type reaction_type  as enum ('fire','cosign','doubt','yawa');
+create type reaction_type  as enum ('fire','cosign','like','yawa');
 create type report_target  as enum ('post','comment','user');
 create type report_reason  as enum (
   'sexual_harassment','tribal_harassment','bullying',

@@ -1,0 +1,11 @@
+-- Reaction refresh: Like (heart) now leads the reaction bar, ahead of
+-- Fire / Cosign / Yawa — matches how students actually expect the
+-- first reaction slot to behave (Facebook/Instagram/WhatsApp all lead
+-- with Like), per direct feedback from early testers.
+--
+-- Postgres enums support renaming a value in place (>= PG10), so this
+-- is a single statement: every existing reactions row that was 'doubt'
+-- becomes 'like' automatically, no backfill/data migration needed, and
+-- no downtime. Safe to run once; running it twice will error because
+-- 'doubt' will no longer exist, which is the correct behavior.
+alter type reaction_type rename value 'doubt' to 'like';

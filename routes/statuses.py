@@ -45,8 +45,8 @@ def upload_status_image():
 def create_status():
     body = request.get_json(silent=True) or {}
     content_type = body.get("content_type")
-    if content_type not in ("image", "text"):
-        return jsonify({"error": "content_type must be 'image' or 'text'"}), 400
+    if content_type not in ("image", "text", "post"):
+        return jsonify({"error": "content_type must be 'image', 'text', or 'post'"}), 400
 
     payload = {"author_id": g.user_id, "content_type": content_type}
     if content_type == "image":
@@ -54,12 +54,26 @@ def create_status():
         if not image_url:
             return jsonify({"error": "image_url is required for an image status"}), 400
         payload["image_url"] = image_url
-    else:
+    elif content_type == "text":
         text = (body.get("text_content") or "").strip()
         if not text or len(text) > MAX_TEXT_LENGTH:
             return jsonify({"error": f"text_content must be 1-{MAX_TEXT_LENGTH} characters"}), 400
         payload["text_content"] = text
         payload["background_color"] = body.get("background_color") or "#7a2436"
+    else:
+        shared_post_id = body.get("shared_post_id")
+        if not shared_post_id:
+            return jsonify({"error": "shared_post_id is required for a post status"}), 400
+        # Confirm the post actually exists and is visible to this user
+        # (RLS on the SELECT below already enforces that) rather than
+        # trusting an arbitrary id straight into the insert.
+        post_check, pstatus = rest_request(
+            "GET", "posts", token=g.token,
+            params={"id": f"eq.{shared_post_id}", "select": "id"},
+        )
+        if pstatus != 200 or not post_check:
+            return jsonify({"error": "post not found"}), 404
+        payload["shared_post_id"] = shared_post_id
 
     data, status = rest_request(
         "POST", "statuses", token=g.token, json_body=payload, prefer="return=representation",
@@ -78,8 +92,10 @@ def list_statuses():
     data, status = rest_request(
         "GET", "statuses", token=g.token,
         params={
-            "select": "id,author_id,content_type,image_url,text_content,background_color,created_at,expires_at,"
-                      "author:users!statuses_author_id_fkey(id,full_name,avatar_url,verified_at)",
+            "select": "id,author_id,content_type,image_url,text_content,background_color,shared_post_id,created_at,expires_at,"
+                      "author:users!statuses_author_id_fkey(id,full_name,avatar_url,verified_at),"
+                      "shared_post:posts!statuses_shared_post_id_fkey(id,content,image_url,author_id,"
+                      "author:users!posts_author_id_fkey(full_name,avatar_url))",
             "order": "created_at.desc",
         },
     )
@@ -88,6 +104,7 @@ def list_statuses():
 
     all_ids = [s["id"] for s in (data or [])]
     seen_ids = set()
+    view_counts = {}
     if all_ids:
         views, vstatus = rest_request(
             "GET", "status_views", token=g.token,
@@ -95,6 +112,21 @@ def list_statuses():
         )
         if vstatus == 200:
             seen_ids = {v["status_id"] for v in (views or [])}
+
+        # View counts: only the caller's own statuses have viewer rows
+        # visible to them anyway (RLS on status_views is author-only,
+        # same as list_viewers below), so this naturally comes back
+        # scoped correctly without filtering by author here.
+        own_status_ids = [s["id"] for s in (data or []) if s["author_id"] == g.user_id]
+        if own_status_ids:
+            all_views, avstatus = rest_request(
+                "GET", "status_views", token=g.token,
+                params={"status_id": f"in.({','.join(own_status_ids)})", "select": "status_id"},
+            )
+            if avstatus == 200:
+                for v in all_views or []:
+                    sid = v["status_id"]
+                    view_counts[sid] = view_counts.get(sid, 0) + 1
 
     grouped = {}
     for s in data or []:
@@ -110,6 +142,7 @@ def list_statuses():
             "statuses": [],
         })
         s["viewed"] = s["id"] in seen_ids
+        s["view_count"] = view_counts.get(s["id"], 0)
         grouped[author_id]["statuses"].append(s)
 
     groups = list(grouped.values())
