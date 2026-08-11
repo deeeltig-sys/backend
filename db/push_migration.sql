@@ -53,6 +53,8 @@ declare
   v_title      text := 'CampusMEET';
   v_body       text;
   v_url        text := '/notifications';
+  v_tag        text;
+  v_require_interaction boolean;
   sub          record;
 begin
   select full_name into v_actor_name from users where id = new.actor_id;
@@ -81,7 +83,16 @@ begin
   -- subscription just silently fails to deliver — there's no cleanup
   -- of stale rows built into this pass (a follow-up worth doing once
   -- this is live, not a correctness issue today).
-  for sub in select endpoint, p256dh, auth_key from push_subscriptions where user_id = new.recipient_id loop
+  --
+  -- tag groups repeat notifications from the same source on the lock
+  -- screen (e.g. three reactions on the same post collapse into one
+  -- slot and update in place) instead of stacking separately, same as
+  -- FB's app does. requireInteraction keeps friend requests visible
+  -- until the person actually acts on them rather than auto-dismissing.
+  v_tag := new.type || ':' || coalesce(new.target_id::text, new.actor_id::text);
+  v_require_interaction := new.type in ('friend_request', 'message');
+
+  for sub in select endpoint, p256dh, auth_key from push_subscriptions where user_id = new.user_id loop
     perform net.http_post(
       url := 'https://campus-backend-tz9q.onrender.com/api/push/send',
       headers := jsonb_build_object(
@@ -90,7 +101,8 @@ begin
       ),
       body := jsonb_build_object(
         'endpoint', sub.endpoint, 'p256dh', sub.p256dh, 'auth', sub.auth_key,
-        'title', v_title, 'body', v_body, 'url', v_url
+        'title', v_title, 'body', v_body, 'url', v_url,
+        'tag', v_tag, 'requireInteraction', v_require_interaction
       )
     );
   end loop;

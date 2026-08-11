@@ -13,7 +13,12 @@
 --    exception at all.
 --
 -- 2. status_reactions — same four reaction types as posts (fire/
---    cosign/doubt/yawa), same one-reaction-per-person-per-item shape.
+--    cosign/like/yawa), same one-reaction-per-person-per-item shape.
+--    Kept in sync with reaction_like_rename_migration.sql from the
+--    start (posts.reactions uses the reaction_type enum, this table
+--    uses its own text + check constraint, so the two never inherit
+--    each other's changes automatically — this one has to be updated
+--    by hand whenever the enum is).
 --
 -- 3. original_post_id on statuses — mirrors posts.original_post_id
 --    (the existing repost pattern) so "Share to Story" creates a real
@@ -42,7 +47,7 @@ create trigger trg_increment_status_view_count
 create table if not exists status_reactions (
   status_id  uuid not null references statuses(id) on delete cascade,
   user_id    uuid not null references users(id) on delete cascade,
-  type       text not null check (type in ('fire', 'cosign', 'doubt', 'yawa')),
+  type       text not null check (type in ('fire', 'cosign', 'like', 'yawa')),
   created_at timestamptz not null default now(),
   primary key (status_id, user_id)
 );

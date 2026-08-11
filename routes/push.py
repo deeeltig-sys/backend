@@ -76,5 +76,7 @@ def send_push():
         title=body.get("title"),
         body_text=body.get("body"),
         url=body.get("url"),
+        tag=body.get("tag"),
+        require_interaction=body.get("requireInteraction", False),
     )
     return jsonify({"sent": sent}), 200
