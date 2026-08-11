@@ -82,7 +82,7 @@ def posts_for_hashtag(tag):
 
     ordered = _filter_blocked(ordered, g.token)
     ordered = _filter_by_audience(ordered, g.user_id, g.token)
-    _attach_user_reactions(ordered, g.token)
+    _attach_user_reactions(ordered, g.token, g.user_id)
     _attach_original_posts(ordered, g.token)
     _attach_polls(ordered, g.token)
     _attach_mentions(ordered, g.token)

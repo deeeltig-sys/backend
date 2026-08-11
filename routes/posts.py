@@ -18,19 +18,28 @@ def _bearer_token_if_present():
     return header.split(" ", 1)[1] if header.startswith("Bearer ") else None
 
 
-def _attach_user_reactions(posts, token):
+def _attach_user_reactions(posts, token, user_id):
     """Mutates `posts` in place, adding `user_reaction` (or None) to each
     row. Without this the frontend has no way to know "you already
     reacted to this one" -- the feed/search views themselves can't carry
     that, since it's specific to whoever is asking, not the post itself.
     Silently does nothing if there's no token (anonymous browsing) or no
-    posts to annotate."""
-    if not token or not posts:
+    posts to annotate.
+
+    Filters on user_id as well as post_id -- reactions_select is
+    `using (true)` (see db/rls_policies.sql), open by design so
+    ReactorsModal can show everyone's names, not just the caller's own.
+    Without the user_id filter here, a post with more than one reactor
+    returns every reactor's row for that post, and the old dict-comp
+    below picked whichever one landed last -- effectively a stranger's
+    reaction on any post that had picked up more than one, which is
+    why it only ever looked right on lightly-reacted posts."""
+    if not token or not posts or not user_id:
         return
     post_ids = ",".join(p["id"] for p in posts)
     reactions, status = rest_request(
         "GET", "reactions", token=token,
-        params={"post_id": f"in.({post_ids})", "select": "post_id,type"},
+        params={"post_id": f"in.({post_ids})", "user_id": f"eq.{user_id}", "select": "post_id,type"},
     )
     if status != 200 or not isinstance(reactions, list):
         return
@@ -287,7 +296,7 @@ def feed():
 
     data = _filter_blocked(data, g.token)
     data = _filter_by_audience(data, g.user_id, g.token)
-    _attach_user_reactions(data, g.token)
+    _attach_user_reactions(data, g.token, g.user_id)
     _attach_original_posts(data, g.token)
     _attach_polls(data, g.token)
     _attach_mentions(data, g.token)
@@ -358,7 +367,7 @@ def explore():
             if len(diversified) >= limit:
                 break
 
-    _attach_user_reactions(diversified, g.token)
+    _attach_user_reactions(diversified, g.token, g.user_id)
     _attach_original_posts(diversified, g.token)
     _attach_polls(diversified, g.token)
     _attach_mentions(diversified, g.token)
@@ -391,7 +400,7 @@ def search_posts():
 
     data = _filter_blocked(data, g.token)
     data = _filter_by_audience(data, g.user_id, g.token)
-    _attach_user_reactions(data, g.token)
+    _attach_user_reactions(data, g.token, g.user_id)
     _attach_original_posts(data, g.token)
     _attach_polls(data, g.token)
     _attach_mentions(data, g.token)
@@ -556,7 +565,7 @@ def get_post(post_id):
     if not data:
         return jsonify({"error": "post not found"}), 404
 
-    _attach_user_reactions(data, g.token)
+    _attach_user_reactions(data, g.token, g.user_id)
     _attach_original_posts(data, g.token)
     _attach_polls(data, g.token)
     _attach_mentions(data, g.token)
@@ -676,7 +685,7 @@ def posts_by_user(user_id):
 
     data = _filter_blocked(data, g.token)
     data = _filter_by_audience(data, g.user_id, g.token)
-    _attach_user_reactions(data, g.token)
+    _attach_user_reactions(data, g.token, g.user_id)
     _attach_original_posts(data, g.token)
     _attach_polls(data, g.token)
     _attach_mentions(data, g.token)
@@ -745,7 +754,7 @@ def list_saved():
     ordered = [by_id[pid] for pid in post_ids if pid in by_id]  # preserves save-order, not feed's random order
     ordered = _filter_blocked(ordered, g.token)
     ordered = _filter_by_audience(ordered, g.user_id, g.token)
-    _attach_user_reactions(ordered, g.token)
+    _attach_user_reactions(ordered, g.token, g.user_id)
     _attach_original_posts(ordered, g.token)
     _attach_polls(ordered, g.token)
     _attach_mentions(ordered, g.token)

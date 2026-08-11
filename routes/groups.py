@@ -245,7 +245,7 @@ def group_posts(group_id):
 
     data = _filter_blocked(data, g.token)
     data = _filter_by_audience(data, g.user_id, g.token)
-    _attach_user_reactions(data, g.token)
+    _attach_user_reactions(data, g.token, g.user_id)
     _attach_original_posts(data, g.token)
     _attach_polls(data, g.token)
     _attach_mentions(data, g.token)

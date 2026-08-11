@@ -63,7 +63,7 @@ begin
       url := 'https://campus-backend-tz9q.onrender.com/api/push/send',
       headers := jsonb_build_object(
         'Content-Type', 'application/json',
-        'X-Webhook-Secret', 'pnPTdCxlYFD1rrKHmYhyQICon43AYsKvR1T1CtaMfNo'
+        'X-Webhook-Secret', 'Fgd8TBTTwAm7CtVIGmxHt5PPpAxpSNWx46d4uzd1olI'
       ),
       body := jsonb_build_object(
         'endpoint', sub.endpoint, 'p256dh', sub.p256dh, 'auth', sub.auth_key,
