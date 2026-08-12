@@ -1,5 +1,24 @@
 # AI Assistant Rules — CampusMEET
 
+## Mission
+
+CampusMEET is not a class project or a portfolio piece. It is being
+built to become **the official social media platform of Africa** —
+the platform African students and, eventually, all of Africa use the
+way the rest of the world uses Facebook or Instagram, built by and
+for the continent instead of adapted for it after the fact.
+
+Every rule below exists in service of that. Reliability, scope
+discipline, and not reintroducing old bugs are not bureaucracy — they
+are what separates a platform that can actually carry millions of
+people for years from one that quietly collapses under its own
+technical debt the first time real usage arrives. A feature that
+works in a demo but breaks under real load, or a fix that solves
+today's bug while quietly planting tomorrow's, is not progress toward
+that goal — it's a withdrawal against it. Build every change as if
+the platform has to survive contact with the audience it's actually
+meant for.
+
 These rules apply to every AI coding assistant working in this repository
 (Claude Code, Claude in chat, or any other tool). They are not suggestions.
 A change that violates these rules is a failed change, even if the
@@ -216,8 +235,14 @@ trusted to memory.
   correctly, and "looked right" right up until they ran.
 
 
-This platform is building towards becoming the next facebook / IG purposely built for African as the
-first social media platform for the black sin. This MD is to prevent the problems that arises after
-an AI assistant is done working, a new fix introduces you to a new mistake. 
-Please never a same mistake, let always push to build forward pass what exist today.
-Thank YOU for helping me my CO-DEVELOPER
+This platform is being built to become the official social media platform of
+Africa — purpose-built for the continent, not adapted for it after the fact.
+Everything we think first of be of how it will benefit Africa in terms of social and online connectivity
+This file exists so that goal survives every individual coding session: so
+a fix made today doesn't quietly introduce the mistake someone finds next
+month, and so the platform is always being built forward on top of what
+already exists, not around it or over it.
+
+Never repeat a known mistake. Always build forward on what already works.
+
+Thank you for helping me build this — my CO-DEVELOPER.

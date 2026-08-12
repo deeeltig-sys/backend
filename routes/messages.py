@@ -4,9 +4,26 @@ from flask import Blueprint, request, jsonify, g
 from datetime import datetime, timezone, timedelta
 from lib.supabase_client import rest_request, rpc, storage_upload_private, storage_create_signed_url, storage_delete_object
 from lib.decorators import require_auth
+from lib.limiter import limiter
 from models.reaction import is_valid_reaction
 
 bp = Blueprint("messages", __name__, url_prefix="/api/conversations")
+
+# lib/limiter.py's default_limits=["200 per hour"] is sized for
+# auth.py's abuse-prevention routes (signup/login/forgot-password) —
+# it was never meant to cover this blueprint, but with no exemption it
+# silently also caps every read here, keyed by IP. A single open chat
+# already spends that whole budget on its own polling fallback +
+# typing indicator alone (4s message poll = 900/hr, 3s typing poll =
+# 1200/hr) before a single message is even sent, and it's per-IP, not
+# per-user — two people testing behind the same router or campus WiFi
+# NAT share one 200/hour bucket. Exempting the blueprint removes that
+# ceiling; the handful of endpoints below that genuinely warrant their
+# own cap (creating conversations, sending messages) get an explicit,
+# chat-appropriate limit instead — an exempted blueprint can still
+# carry per-route @limiter.limit() decorators, only the blanket
+# default stops auto-applying.
+limiter.exempt(bp)
 
 # Voice notes are recorded client-side as Opus/webm (MediaRecorder's
 # native output) — no server-side transcoding. This backend has no
@@ -314,6 +331,7 @@ def active_contacts():
 
 @bp.post("")
 @require_auth
+@limiter.limit("30 per hour")  # starting new conversations — generous for real use, cheap to abuse otherwise since this blueprint is exempt from the global default
 def start_conversation():
     body = request.get_json(silent=True) or {}
     other_user_id = body.get("user_id")
@@ -423,6 +441,7 @@ def list_messages(conversation_id):
 
 @bp.post("/<conversation_id>/messages")
 @require_auth
+@limiter.limit("120 per hour")  # ~2/minute sustained — flood/spam guard, well above real typing+sending speed
 def send_message(conversation_id):
     """RLS (messages_insert_own) is what actually enforces the
     message-request gate — a non-initiator can't insert here until
@@ -577,6 +596,7 @@ def set_wallpaper(conversation_id):
 
 @bp.post("/<conversation_id>/messages/voice")
 @require_auth
+@limiter.limit("60 per hour")  # voice notes cost real storage on every send, tighter than text
 def send_voice_message(conversation_id):
     """Uploads a recorded voice note straight to the private
     `voice-notes` bucket (path "{conversation_id}/{uuid}.{ext}") and

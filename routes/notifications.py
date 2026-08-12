@@ -1,8 +1,20 @@
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request
 from lib.decorators import require_auth
+from lib.limiter import limiter
 
 bp = Blueprint("notifications", __name__, url_prefix="/api/notifications")
+
+# Same reasoning as routes/messages.py's identical exemption: lib/limiter.py's
+# default_limits=["200 per hour"] was sized for auth.py's abuse-prevention
+# routes, not for this blueprint. BottomNav.jsx polls GET /unread-count every
+# 30s (120/hr baseline) AND fires it again on every notifications-read event
+# — a genuinely active session opening/clearing Alerts repeatedly can burn
+# through the remaining headroom and hit the exact same 429 wall the chat
+# polling did, just on the Alerts bell instead. No route here needs a tight
+# cap the way auth's signup/login do — mark_read/mark_all_read are ordinary
+# user-click actions, not something worth throttling.
+limiter.exempt(bp)
 
 
 def _flatten_actor(row: dict) -> dict:
