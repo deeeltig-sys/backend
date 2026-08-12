@@ -102,12 +102,22 @@ def sanitize_level_of_study(raw) -> str | None:
 
 def public_user_fields(row: dict) -> dict:
     """Shape a users row for anything visible to other students —
-    the (USTED) mark is derived here, not stored as its own column."""
+    the (USTED) mark is derived here, not stored as its own column.
+
+    follower_count was missing here entirely — every surface that
+    routes another person's data through this shaper (people-to-follow
+    carousel, search, someone else's profile, friend lists) silently
+    hardcoded 0 followers for everyone but yourself, since /api/auth/me
+    is the one place that returns a raw, unshaped row instead of going
+    through this function. The column was always real (it's what
+    ORDER BY follower_count.desc already sorts /suggested by) — it
+    just never made it into the response body."""
     return {
         "id": row.get("id"),
         "full_name": row.get("full_name"),
         "avatar_url": row.get("avatar_url"),
         "standing_count": row.get("standing_count"),
+        "follower_count": row.get("follower_count") or 0,
         "verified": row.get("verified_at") is not None,
         "role": row.get("role"),
         "created_at": row.get("created_at"),
