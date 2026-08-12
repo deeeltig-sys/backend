@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, storage_upload
@@ -88,6 +89,28 @@ def upload_avatar():
         return jsonify({"error": "avatar uploaded but profile update failed"}), 500
 
     return jsonify(updated[0]), 200
+
+
+@bp.post("/heartbeat")
+@require_auth
+def heartbeat():
+    """Pinged periodically by the frontend while the app is
+    foregrounded (see hooks/useHeartbeat.js) to stamp last_seen_at.
+    Deliberately its own tiny endpoint rather than reusing PATCH /me —
+    last_seen_at must always be server-set to the current time, never
+    a client-supplied value, and folding it into update_own_profile's
+    allowed_fields would let a client send an arbitrary timestamp.
+    Live "online now" itself is unrelated to this and stays entirely
+    client-side (Supabase Presence, hooks/usePresence.js) — this
+    column only powers the offline fallback ('Active 5m ago')."""
+    _, status = rest_request(
+        "PATCH", "users", token=g.token,
+        params={"id": f"eq.{g.user_id}"},
+        json_body={"last_seen_at": datetime.now(timezone.utc).isoformat()},
+    )
+    if status >= 400:
+        return jsonify({"error": "heartbeat failed"}), status
+    return jsonify({"ok": True}), 200
 
 
 @bp.patch("/me")

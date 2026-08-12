@@ -224,3 +224,59 @@ def storage_upload(bucket: str, path: str, file_bytes: bytes, content_type: str,
         return data, status
     public_url = f"{Config.SUPABASE_URL}/storage/v1/object/public/{bucket}/{path}"
     return {"url": public_url}, status
+
+
+def storage_upload_private(bucket: str, path: str, file_bytes: bytes, content_type: str, token: str):
+    """Same PUT as storage_upload, but returns just the storage PATH,
+    never a public URL — for private buckets (voice-notes) where a
+    bare /object/public/... link would bypass RLS entirely. Callers
+    must fetch a short-lived link via storage_create_signed_url
+    whenever the object actually needs to be played/downloaded."""
+    url = f"{Config.SUPABASE_URL}/storage/v1/object/{bucket}/{path}"
+    response = requests.put(
+        url,
+        headers=_headers(token, content_type=content_type),
+        data=file_bytes,
+        timeout=REQUEST_TIMEOUT,
+    )
+    data, status = _parse(response)
+    if status >= 400:
+        return data, status
+    return {"path": path}, status
+
+
+def storage_create_signed_url(bucket: str, path: str, token: str, expires_in: int = 3600):
+    """Requests a time-limited signed URL for a private object, using
+    the CALLER's own JWT — Supabase Storage still checks the select
+    RLS policy on storage.objects before it will sign anything, so
+    this can't be used to read an object the caller isn't actually
+    allowed to see. expires_in is in seconds (default 1 hour)."""
+    url = f"{Config.SUPABASE_URL}/storage/v1/object/sign/{bucket}/{path}"
+    response = requests.post(
+        url,
+        headers=_headers(token),
+        json={"expiresIn": expires_in},
+        timeout=REQUEST_TIMEOUT,
+    )
+    data, status = _parse(response)
+    if status >= 400:
+        return data, status
+    signed_path = (data or {}).get("signedURL")
+    if not signed_path:
+        return {"error": "no signed URL returned"}, 500
+    return {"url": f"{Config.SUPABASE_URL}/storage/v1{signed_path}"}, status
+
+
+def storage_delete_object(bucket: str, path: str, token: str):
+    """Deletes an object via the Storage API (NOT a raw SQL DELETE on
+    storage.objects) — this matters: a plain SQL delete only removes
+    the Postgres metadata row, it does NOT free the underlying bytes
+    in Supabase's S3-compatible backend, so the storage bill keeps
+    growing even after the row is gone. Going through this HTTP
+    endpoint is what actually reclaims the space. Runs as the CALLER's
+    own JWT (see module docstring — never service-role), which is why
+    this can only ever delete something the caller's storage RLS
+    policy already lets them delete."""
+    url = f"{Config.SUPABASE_URL}/storage/v1/object/{bucket}/{path}"
+    response = requests.delete(url, headers=_headers(token), timeout=REQUEST_TIMEOUT)
+    return _parse(response)

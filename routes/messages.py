@@ -1,9 +1,43 @@
+import uuid
+
 from flask import Blueprint, request, jsonify, g
-from datetime import datetime, timezone
-from lib.supabase_client import rest_request, rpc
+from datetime import datetime, timezone, timedelta
+from lib.supabase_client import rest_request, rpc, storage_upload_private, storage_create_signed_url, storage_delete_object
 from lib.decorators import require_auth
+from models.reaction import is_valid_reaction
 
 bp = Blueprint("messages", __name__, url_prefix="/api/conversations")
+
+# Voice notes are recorded client-side as Opus/webm (MediaRecorder's
+# native output) — no server-side transcoding. This backend has no
+# ffmpeg/audio toolchain (see requirements.txt — Pillow is for images
+# only), and Opus at the browser's default bitrate is already small
+# enough for the data-cost-conscious audience this is built for, so
+# adding one would be pure extra infra for no real gain.
+MAX_VOICE_BYTES = 8 * 1024 * 1024  # 8MB — generous headroom above a realistic ~2min note
+ALLOWED_VOICE_CONTENT_TYPES = {"audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg"}
+VOICE_SIGNED_URL_TTL_SECONDS = 3600
+
+# Storage lifecycle for voice notes — one of TWO layers, both aimed
+# at the same 5-day cutoff:
+#   1. THIS lazy path — piggybacks on opening a thread (this
+#      endpoint), zero privilege needed, catches active conversations
+#      instantly.
+#   2. A bounded, batched pg_cron sweep living entirely in Postgres
+#      (db/voice_note_lifecycle_scale_migration.sql) — the guarantee
+#      layer, for conversations nobody reopens. That one DOES use a
+#      privileged credential, but it's stored in Supabase Vault, never
+#      here — this Flask backend still never holds a service-role key
+#      (see supabase_client.py's module docstring), that invariant is
+#      unchanged.
+# Both are safe to run together — whichever fires first clears
+# voice_path, the other one just finds nothing left to do.
+# 5 days is short on purpose — the phone-side cache (see
+# components/VoiceMessage.jsx) is what makes playback still feel
+# instant within that window; after it, the note is genuinely gone
+# from Supabase, same as it'll fall out of the phone cache too once
+# the 70MB per-user cap evicts it.
+VOICE_NOTE_EXPIRY_DAYS = 5
 
 
 def _other_participant(conv: dict, me: str) -> dict:
@@ -65,8 +99,8 @@ def list_conversations():
         params={
             "or": f"(user_a.eq.{g.user_id},user_b.eq.{g.user_id})",
             "select": "id,user_a,user_b,status,initiated_by,last_message_at,"
-                      "user_a_info:users!conversations_user_a_fkey(id,full_name,avatar_url,verified_at),"
-                      "user_b_info:users!conversations_user_b_fkey(id,full_name,avatar_url,verified_at)",
+                      "user_a_info:users!conversations_user_a_fkey(id,full_name,avatar_url,verified_at,last_seen_at),"
+                      "user_b_info:users!conversations_user_b_fkey(id,full_name,avatar_url,verified_at,last_seen_at)",
             "order": "last_message_at.desc",
         },
     )
@@ -120,6 +154,7 @@ def list_conversations():
                 "full_name": other.get("full_name"),
                 "avatar_url": other.get("avatar_url"),
                 "verified": other.get("verified_at") is not None,
+                "last_seen_at": other.get("last_seen_at"),
             },
         })
 
@@ -301,6 +336,41 @@ def accept_conversation(conversation_id):
     return jsonify({"ok": True}), 200
 
 
+def _expire_old_voice_notes(conversation_id: str, messages: list, token: str) -> None:
+    """Best-effort — never lets a cleanup failure break the actual
+    message list response, this is a nice-to-have running piggyback
+    on a real request, not a critical path. Deletes the storage
+    object (reclaims the billed bytes — see storage_delete_object's
+    docstring on why a raw SQL delete wouldn't) and clears the voice
+    columns on the message row, replacing it with a plain-text
+    placeholder so the conversation history stays coherent instead of
+    leaving a dead/broken voice bubble."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=VOICE_NOTE_EXPIRY_DAYS)).isoformat()
+    for m in messages:
+        if m.get("type") != "voice" or not m.get("voice_path"):
+            continue
+        if not m.get("created_at") or m["created_at"] >= cutoff:
+            continue
+        try:
+            storage_delete_object("voice-notes", m["voice_path"], token)
+            rest_request(
+                "PATCH", "messages", token=token,
+                params={"id": f"eq.{m['id']}"},
+                json_body={
+                    "voice_path": None, "voice_duration_ms": None, "voice_waveform": None,
+                    "content": "🎤 Voice message (expired)",
+                },
+            )
+            # Reflect it in the response we're about to send back, so
+            # the client doesn't try to play a file that's already gone.
+            m["voice_path"] = None
+            m["voice_duration_ms"] = None
+            m["voice_waveform"] = None
+            m["content"] = "🎤 Voice message (expired)"
+        except Exception:
+            pass  # this message's voice note just stays around until the next thread-open retries it
+
+
 @bp.get("/<conversation_id>/messages")
 @require_auth
 def list_messages(conversation_id):
@@ -312,7 +382,11 @@ def list_messages(conversation_id):
     states = _my_states([conversation_id], g.token)
     cleared_before = (states.get(conversation_id) or {}).get("cleared_before")
 
-    params = {"conversation_id": f"eq.{conversation_id}", "select": "*", "order": "created_at.asc"}
+    params = {
+        "conversation_id": f"eq.{conversation_id}",
+        "select": "*,message_reactions(user_id,emoji)",
+        "order": "created_at.asc",
+    }
     if cleared_before:
         params["created_at"] = f"gt.{cleared_before}"
 
@@ -320,12 +394,29 @@ def list_messages(conversation_id):
     if status != 200:
         return jsonify({"error": "could not load messages"}), status
 
+    if isinstance(data, list) and data:
+        _expire_old_voice_notes(conversation_id, data, g.token)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Opening the thread is itself proof the message reached this
+    # device, so stamp delivered_at first — covers anyone who never
+    # got the live realtime delivery ping (see POST /messages/delivered
+    # below), e.g. they were offline when it was sent. Kept as its own
+    # PATCH (not merged into the read_at one) so a message that WAS
+    # already delivered earlier keeps its real, earlier delivered_at
+    # instead of being overwritten to "just now".
+    rest_request(
+        "PATCH", "messages", token=g.token,
+        params={"conversation_id": f"eq.{conversation_id}", "sender_id": f"neq.{g.user_id}", "delivered_at": "is.null"},
+        json_body={"delivered_at": now_iso},
+    )
     # Mark incoming (not-mine) unread messages as read now that this
     # user has actually opened the thread.
     rest_request(
         "PATCH", "messages", token=g.token,
         params={"conversation_id": f"eq.{conversation_id}", "sender_id": f"neq.{g.user_id}", "read_at": "is.null"},
-        json_body={"read_at": datetime.now(timezone.utc).isoformat()},
+        json_body={"read_at": now_iso},
     )
     return jsonify(data or []), 200
 
@@ -338,15 +429,39 @@ def send_message(conversation_id):
     they've called /accept first. A blocked insert comes back as a
     plain RLS-denial error from PostgREST, which reads a little
     cryptic, so it's translated into something a student would
-    actually understand."""
+    actually understand.
+
+    type='sticker' is handled here (no file, just a client-known
+    preset id — see frontend's sticker pack). type='voice' is NOT
+    handled here — voice notes carry an audio file and go through the
+    dedicated multipart endpoint below."""
     body = request.get_json(silent=True) or {}
-    content = (body.get("content") or "").strip()
-    if not content or len(content) > 2000:
-        return jsonify({"error": "message must be 1-2000 characters"}), 400
+    msg_type = body.get("type") or "text"
+
+    if msg_type == "sticker":
+        sticker_id = (body.get("sticker_id") or "").strip()
+        if not sticker_id or len(sticker_id) > 60:
+            return jsonify({"error": "sticker_id is required"}), 400
+        payload = {
+            "conversation_id": conversation_id, "sender_id": g.user_id,
+            "type": "sticker", "sticker_id": sticker_id,
+            # content still needs to satisfy the NOT NULL/length check
+            # on the column, and doubles as the Inbox list preview text
+            # ("Sent a sticker") the same way WhatsApp/IG show a
+            # placeholder line for non-text messages.
+            "content": "Sent a sticker",
+        }
+    elif msg_type == "text":
+        content = (body.get("content") or "").strip()
+        if not content or len(content) > 2000:
+            return jsonify({"error": "message must be 1-2000 characters"}), 400
+        payload = {"conversation_id": conversation_id, "sender_id": g.user_id, "content": content}
+    else:
+        return jsonify({"error": "type must be 'text' or 'sticker' (use the voice endpoint for voice notes)"}), 400
 
     data, status = rest_request(
         "POST", "messages", token=g.token,
-        json_body={"conversation_id": conversation_id, "sender_id": g.user_id, "content": content},
+        json_body=payload,
         prefer="return=representation",
     )
     if status >= 400:
@@ -458,3 +573,164 @@ def set_wallpaper(conversation_id):
     if not ok:
         return jsonify({"error": "could not set wallpaper"}), 500
     return jsonify({"wallpaper": wallpaper, "custom_wallpaper_url": custom_url}), 200
+
+
+@bp.post("/<conversation_id>/messages/voice")
+@require_auth
+def send_voice_message(conversation_id):
+    """Uploads a recorded voice note straight to the private
+    `voice-notes` bucket (path "{conversation_id}/{uuid}.{ext}") and
+    creates the message row in one call. Same RLS-gated,
+    no-service-role pattern as posts.py's upload_image — the caller's
+    own JWT is what the storage write actually runs as, so
+    voice_notes_storage_migration.sql's participant-only policy is
+    what enforces this can't be uploaded into a conversation the
+    caller isn't part of."""
+    if "audio" not in request.files:
+        return jsonify({"error": "attach a recording under the 'audio' field"}), 400
+
+    file = request.files["audio"]
+    content_type = (file.mimetype or "audio/webm").split(";")[0].strip()
+    if content_type not in ALLOWED_VOICE_CONTENT_TYPES:
+        return jsonify({"error": "unsupported audio format"}), 400
+
+    file_bytes = file.read()
+    if not file_bytes:
+        return jsonify({"error": "recording is empty"}), 400
+    if len(file_bytes) > MAX_VOICE_BYTES:
+        return jsonify({"error": "voice note is too large (max 8MB)"}), 400
+
+    try:
+        duration_ms = int(request.form.get("duration_ms", 0))
+    except (TypeError, ValueError):
+        duration_ms = 0
+    if duration_ms <= 0 or duration_ms > 10 * 60 * 1000:  # sanity cap: 10 minutes
+        return jsonify({"error": "invalid duration_ms"}), 400
+
+    # Precomputed amplitude samples from the client's own recording
+    # analysis (Web Audio API) — stored once, so playback never has to
+    # re-analyze the audio on a low-end device. Optional: falls back to
+    # a flat waveform client-side if omitted, this just skips storing one.
+    waveform_raw = request.form.get("waveform")
+    waveform = None
+    if waveform_raw:
+        try:
+            import json as _json
+            parsed = _json.loads(waveform_raw)
+            if isinstance(parsed, list) and len(parsed) <= 200:
+                waveform = [float(v) for v in parsed]
+        except (ValueError, TypeError):
+            waveform = None  # malformed waveform data — drop it, don't fail the whole upload over a cosmetic field
+
+    extension = {"audio/webm": "webm", "audio/ogg": "ogg", "audio/mp4": "m4a", "audio/mpeg": "mp3"}[content_type]
+    path = f"{conversation_id}/{uuid.uuid4().hex}.{extension}"
+
+    upload_data, status = storage_upload_private("voice-notes", path, file_bytes, content_type, g.token)
+    if status >= 400:
+        return jsonify({"error": "voice note upload failed, try again"}), status
+
+    data, status = rest_request(
+        "POST", "messages", token=g.token,
+        json_body={
+            "conversation_id": conversation_id, "sender_id": g.user_id,
+            "type": "voice", "content": "🎤 Voice message",
+            "voice_path": upload_data["path"], "voice_duration_ms": duration_ms,
+            "voice_waveform": waveform,
+        },
+        prefer="return=representation",
+    )
+    if status >= 400:
+        return jsonify({"error": "you need to accept this conversation before replying"}), status
+    return jsonify(data[0] if isinstance(data, list) else data), 201
+
+
+@bp.get("/<conversation_id>/messages/<message_id>/voice-url")
+@require_auth
+def get_voice_url(conversation_id, message_id):
+    """Signs a short-lived playback URL for a voice note. Fetches the
+    message row through the caller's own token first — messages_select_own
+    RLS means this 404s (as 'not found', not a 403) for anyone who
+    isn't actually a participant in the conversation, same as every
+    other message read in this file."""
+    data, status = rest_request(
+        "GET", "messages", token=g.token,
+        params={"id": f"eq.{message_id}", "conversation_id": f"eq.{conversation_id}", "select": "voice_path,type"},
+    )
+    if status != 200 or not data:
+        return jsonify({"error": "voice note not found"}), 404
+    row = data[0]
+    if row.get("type") != "voice" or not row.get("voice_path"):
+        return jsonify({"error": "this message has no voice note"}), 400
+
+    signed, sign_status = storage_create_signed_url("voice-notes", row["voice_path"], g.token, VOICE_SIGNED_URL_TTL_SECONDS)
+    if sign_status >= 400:
+        return jsonify({"error": "could not load voice note"}), sign_status
+    return jsonify({"url": signed["url"], "expires_in": VOICE_SIGNED_URL_TTL_SECONDS}), 200
+
+
+@bp.post("/<conversation_id>/messages/delivered")
+@require_auth
+def mark_delivered(conversation_id):
+    """Batch delivery ack — called by the frontend the INSTANT a new
+    message reaches the recipient's client (realtime INSERT event via
+    useIncomingMessages, see hooks/useIncomingMessages.js), regardless
+    of whether the thread is even open. This is what makes the double
+    tick appear as soon as the message reaches the receiver rather
+    than waiting for them to open the chat (that's what read_at is
+    for). Idempotent (delivered_at is.null filter) and safe to call
+    for messages that are already delivered or don't belong to this
+    conversation — those rows just match zero rows and no-op."""
+    body = request.get_json(silent=True) or {}
+    message_ids = body.get("message_ids")
+    if not isinstance(message_ids, list) or not message_ids:
+        return jsonify({"error": "message_ids must be a non-empty list"}), 400
+    if len(message_ids) > 100:
+        message_ids = message_ids[:100]  # sane cap — this is a per-batch ping, not a bulk backfill tool
+
+    ids_csv = ",".join(str(mid) for mid in message_ids)
+    rest_request(
+        "PATCH", "messages", token=g.token,
+        params={
+            "conversation_id": f"eq.{conversation_id}",
+            "id": f"in.({ids_csv})",
+            "sender_id": f"neq.{g.user_id}",
+            "delivered_at": "is.null",
+        },
+        json_body={"delivered_at": datetime.now(timezone.utc).isoformat()},
+    )
+    return jsonify({"ok": True}), 200
+
+
+@bp.post("/<conversation_id>/messages/<message_id>/react")
+@require_auth
+def react_to_message(conversation_id, message_id):
+    """One live reaction per user per message — same upsert-via-
+    on_conflict pattern as routes/reactions.py's post reactions, and
+    reuses the exact same emoji vocabulary (like/fire/cosign/yawa)
+    rather than a separate chat-only reaction set."""
+    body = request.get_json(silent=True) or {}
+    emoji = body.get("emoji")
+    if not is_valid_reaction(emoji):
+        return jsonify({"error": "emoji must be one of like, fire, cosign, yawa"}), 400
+
+    data, status = rest_request(
+        "POST", "message_reactions", token=g.token,
+        json_body={"message_id": message_id, "user_id": g.user_id, "emoji": emoji},
+        params={"on_conflict": "message_id,user_id"},
+        prefer="return=representation,resolution=merge-duplicates",
+    )
+    if status >= 400:
+        return jsonify({"error": "could not react to this message"}), status
+    return jsonify(data[0] if isinstance(data, list) else data), 200
+
+
+@bp.delete("/<conversation_id>/messages/<message_id>/react")
+@require_auth
+def remove_message_reaction(conversation_id, message_id):
+    data, status = rest_request(
+        "DELETE", "message_reactions", token=g.token,
+        params={"message_id": f"eq.{message_id}", "user_id": f"eq.{g.user_id}"},
+    )
+    if status >= 400:
+        return jsonify({"error": "could not remove reaction"}), status
+    return jsonify({"ok": True}), 200
