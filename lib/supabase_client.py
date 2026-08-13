@@ -87,11 +87,19 @@ def rest_count(table: str, token: str | None = None, params: dict | None = None)
     return None, response.status_code
 
 
-def rpc(function_name: str, token: str | None = None, payload: dict | None = None):
+def rpc(function_name: str, token: str | None = None, payload: dict | None = None, params: dict | None = None):
+    """`params` is separate from `payload`: payload is the function's
+    own arguments (posted as the JSON body), params is PostgREST
+    query-string filtering/pagination (?select=&limit=&offset=&or=...)
+    applied on TOP of the function's result set — only meaningful for
+    functions declared `returns setof <table_or_view>`, which is
+    exactly what feed_seeded_for_viewer() is. Existing call sites don't
+    pass this, so it's opt-in and doesn't change their behavior."""
     url = f"{Config.SUPABASE_URL}/rest/v1/rpc/{function_name}"
     response = requests.post(
         url,
         headers=_headers(token, prefer="return=representation"),
+        params=params,
         json=payload or {},
         timeout=REQUEST_TIMEOUT,
     )

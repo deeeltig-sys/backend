@@ -255,11 +255,29 @@ def _attach_images(posts, token):
 @bp.get("/feed")
 @optional_auth
 def feed():
-    """Reads from the `feed` view — active posts only, ranked by
-    weighted-random sampling over feed_score() (see
-    db/feed_randomization_migration.sql). The view itself also joins
-    author name/avatar/verified; this route additionally stamps each
-    post with the caller's own user_reaction when a token is present.
+    """Reads from `feed_seeded_for_viewer()` — same weighted-random
+    sampling as before (see db/feed_randomization_migration.sql +
+    FIX_feed_score_and_view.sql for feed_score's recency decay), now
+    with two additions layered on top (db/feed_affinity_migration.sql):
+
+    1. Affinity multiplier — your own posts, then mutual friends, then
+       one-way follows, get their score multiplied up before the
+       weighted-random draw, so they're heavily favored to surface
+       near the top without turning this into a strict follows-only
+       feed. Campus-wide discovery stays mixed in on purpose — with a
+       still-growing user base, a follows-only feed would look dead
+       for most students. This is the deliberate middle ground
+       between "pure FB/IG follow graph" and "pure TikTok For You".
+    2. A real seed, finally passed through — this route previously
+       queried the `feed` view directly and never called the seeded
+       function that already existed for exactly this, so every
+       request (including paginated ones) got its own independent
+       random draw. That's what made posts appear to jump/duplicate/
+       vanish on scroll or after any incidental re-fetch. One seed is
+       now generated per feed "session" here and handed back in the
+       response; the frontend already reuses it across pagination
+       (see feedSeedRef in Feed.jsx) — that plumbing was sitting there
+       unused because the backend never sent a seed to reuse.
 
     `scope` param: 'campus' (default) shows only posts from the
     caller's own university — this is the actual multi-university
@@ -273,6 +291,10 @@ def feed():
     limit = request.args.get("limit", 30)
     offset = request.args.get("offset", 0)
     scope = request.args.get("scope", "campus")
+    # A fresh seed if the frontend didn't send one back (first load of
+    # a session) — reused as-is on every subsequent paginated request
+    # for that same session so page 2 doesn't reshuffle page 1.
+    seed = request.args.get("seed") or uuid.uuid4().hex
 
     params = {"select": "*", "limit": limit, "offset": offset}
 
@@ -290,7 +312,12 @@ def feed():
             # filter. See db/okyeame_migration.sql for author_is_official.
             params["or"] = f"(university_id.eq.{university_id},author_is_official.eq.true)"
 
-    data, status = rest_request("GET", "feed", params=params)
+    data, status = rpc(
+        "feed_seeded_for_viewer",
+        token=g.token,
+        payload={"p_seed": seed, "p_viewer_id": g.user_id},
+        params=params,
+    )
     if status != 200:
         return jsonify({"error": "could not load feed"}), status
 
@@ -301,7 +328,7 @@ def feed():
     _attach_polls(data, g.token)
     _attach_mentions(data, g.token)
     _attach_images(data, g.token)
-    return jsonify(data), 200
+    return jsonify({"posts": data, "seed": seed}), 200
 
 
 @bp.get("/explore")
