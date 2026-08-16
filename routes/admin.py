@@ -3,7 +3,8 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, rest_count, rpc
-from lib.decorators import require_staff, require_admin
+from lib.decorators import require_staff, require_admin, is_owner_user
+from lib.audit import log_admin_action
 
 bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 
@@ -32,9 +33,14 @@ def set_role(user_id):
     actual replacement for hand-editing the database every time.
     Deliberately @require_admin, not @require_staff: if a moderator
     could call this, they could promote themselves straight to admin.
-    Only an existing admin can grant or revoke staff access, same
-    trust boundary as verify_student() has at the database level for
-    a different action.
+
+    The admin tier specifically is further restricted to the owner
+    only — promoting to admin or demoting FROM admin requires
+    is_owner, checked inline below. Moderator changes stay at the
+    @require_admin level. This used to let any admin grant or revoke
+    admin access to anyone, which stopped making sense once is_owner
+    existed as a tier above it — an admin quietly adding another admin
+    behind the owner's back was a real gap, not a hypothetical one.
 
     Guards against a founder locking themselves out by accident: you
     can't demote your own account through this route."""
@@ -46,6 +52,14 @@ def set_role(user_id):
     if user_id == g.user_id and new_role != "admin":
         return jsonify({"error": "you can't demote your own account"}), 400
 
+    current, cstatus = rest_request(
+        "GET", "users", token=g.token, params={"id": f"eq.{user_id}", "select": "role"},
+    )
+    old_role = (current or [{}])[0].get("role") if cstatus == 200 else None
+
+    if (new_role == "admin" or old_role == "admin") and not is_owner_user(g.token, g.user_id):
+        return jsonify({"error": "only the owner can grant or revoke admin access"}), 403
+
     data, status = rest_request(
         "PATCH", "users", token=g.token,
         params={"id": f"eq.{user_id}"}, json_body={"role": new_role}, prefer="return=representation",
@@ -54,6 +68,12 @@ def set_role(user_id):
         return jsonify({"error": "could not update role"}), status
     if not data:
         return jsonify({"error": "user not found"}), 404
+
+    log_admin_action(
+        g.user_id, g.token, "role_change",
+        target_type="user", target_id=user_id,
+        detail={"from_role": old_role, "to_role": new_role},
+    )
     return jsonify(data[0]), 200
 
 
@@ -142,6 +162,7 @@ def verify_user(user_id):
     data, status = rpc("verify_student", token=g.token, payload={"p_user_id": user_id})
     if status >= 400:
         return jsonify({"error": "verification failed"}), status
+    log_admin_action(g.user_id, g.token, "student_verified", target_type="user", target_id=user_id)
     return jsonify({"ok": True}), 200
 
 
@@ -151,6 +172,7 @@ def unverify_user(user_id):
     data, status = rpc("unverify_student", token=g.token, payload={"p_user_id": user_id})
     if status >= 400:
         return jsonify({"error": "unverify failed"}), status
+    log_admin_action(g.user_id, g.token, "student_unverified", target_type="user", target_id=user_id)
     return jsonify({"ok": True}), 200
 
 
@@ -180,7 +202,32 @@ def update_report(report_id):
     )
     if status >= 400:
         return jsonify({"error": "update failed"}), status
+    log_admin_action(
+        g.user_id, g.token, "report_resolved",
+        target_type="report", target_id=report_id, detail={"status": status_val},
+    )
     return jsonify(data[0] if data else {}), 200
+
+
+@bp.get("/activity")
+@require_staff
+def list_activity():
+    """The audit log — every role change, report resolution, and
+    student verification, newest-first. RLS
+    (admin_actions_select_staff) already restricts this to staff, this
+    decorator is a second, redundant layer at the route level."""
+    data, status = rest_request(
+        "GET", "admin_actions", token=g.token,
+        params={
+            "select": "id,action_type,target_type,target_id,detail,created_at,"
+                      "actor:users!admin_actions_actor_id_fkey(id,full_name,avatar_url)",
+            "order": "created_at.desc",
+            "limit": "100",
+        },
+    )
+    if status != 200:
+        return jsonify({"error": "could not load activity"}), status
+    return jsonify(data), 200
 
 
 @bp.get("/reactions/velocity")

@@ -58,9 +58,15 @@ $$;
 -- FIX_feed_score_and_view.sql (the canonical current version — same
 -- feed_score signature, same columns) with one column appended at
 -- the end; nothing existing removed or reordered.
-drop view if exists feed;
-
-create view feed as
+--
+-- CREATE OR REPLACE, not DROP + CREATE: two functions outside this
+-- migration (feed_seeded, feed_seeded_for_viewer) depend on the
+-- feed view's type, and dropping it would take them down too, even
+-- with CASCADE forcing it through. Postgres allows CREATE OR REPLACE
+-- VIEW to add columns at the end without disturbing dependents —
+-- exactly this case — as long as nothing existing is removed or
+-- reordered, which this doesn't.
+create or replace view feed as
 select p.id,
     p.university_id,
     p.author_id,
@@ -79,8 +85,8 @@ select p.id,
     u.full_name as author_full_name,
     u.avatar_url as author_avatar_url,
     u.verified_at is not null as author_verified,
-    u.is_official as author_is_official,
-    p.comment_count
+    p.comment_count,
+    u.is_official as author_is_official
    from posts p
      left join users u on u.id = p.author_id
   where p.status = 'active'::post_status
@@ -115,13 +121,15 @@ set search_path = public
 as $$
 declare
   v_okyeame_id uuid;
+  v_university_id uuid;
   v_post posts;
 begin
   if not is_owner() then
     raise exception 'not authorized';
   end if;
 
-  select id into v_okyeame_id from users where is_official = true limit 1;
+  select id, university_id into v_okyeame_id, v_university_id
+  from users where is_official = true limit 1;
   if v_okyeame_id is null then
     raise exception 'okyeame account not configured — set is_official = true on its users row first';
   end if;
@@ -130,8 +138,13 @@ begin
     raise exception 'content cannot be empty';
   end if;
 
-  insert into posts (author_id, content, image_url, status, audience)
-  values (v_okyeame_id, trim(p_content), p_image_url, 'active', 'public')
+  -- university_id is NOT NULL on posts. The reach-to-every-campus
+  -- behavior comes from routes/posts.py's feed filter bypass
+  -- (author_is_official.eq.true), not from leaving this column empty
+  -- — it still needs a real value to satisfy the constraint, this
+  -- just isn't what the feed actually filters on for this account.
+  insert into posts (author_id, university_id, content, image_url, status, audience)
+  values (v_okyeame_id, v_university_id, trim(p_content), p_image_url, 'active', 'public')
   returning * into v_post;
 
   return v_post;
@@ -165,12 +178,20 @@ alter table spotlights enable row level security;
 
 -- Public read — CampusMEET HQ is explicitly meant to be a "must-know"
 -- feed for everyone, not gated content.
+-- drop-then-create rather than a bare create: policies have no
+-- IF NOT EXISTS in Postgres, and this migration has already partially
+-- run at least once — re-running the bare version hit "already
+-- exists" on the very first policy.
+drop policy if exists spotlights_select_all on spotlights;
 create policy spotlights_select_all on spotlights for select using (true);
 
 -- Write access enforced entirely through is_owner() — deliberately no
 -- policy lets a plain admin/moderator insert here, only the owner.
+drop policy if exists spotlights_write_owner on spotlights;
 create policy spotlights_write_owner on spotlights for insert with check (is_owner());
+drop policy if exists spotlights_update_owner on spotlights;
 create policy spotlights_update_owner on spotlights for update using (is_owner());
+drop policy if exists spotlights_delete_owner on spotlights;
 create policy spotlights_delete_owner on spotlights for delete using (is_owner());
 
 -- ============================================================

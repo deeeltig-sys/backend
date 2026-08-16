@@ -35,6 +35,30 @@ MAX_VOICE_BYTES = 8 * 1024 * 1024  # 8MB — generous headroom above a realistic
 ALLOWED_VOICE_CONTENT_TYPES = {"audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg"}
 VOICE_SIGNED_URL_TTL_SECONDS = 3600
 
+# Chat attachments — images, documents, and standalone audio files
+# (distinct from the hold-to-record voice note above). One shared
+# endpoint and bucket for all three; the message row's `type` is
+# derived from the upload's content-type ('image' vs 'file') so the
+# frontend knows to render an inline photo vs a download chip.
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024  # 25MB — covers phone photos and typical PDFs/slides without inviting abuse
+ALLOWED_ATTACHMENT_CONTENT_TYPES = {
+    # images — rendered inline
+    "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif",
+    # documents
+    "application/pdf": "pdf",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.ms-powerpoint": "ppt",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "application/vnd.ms-excel": "xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "text/plain": "txt",
+    "application/zip": "zip",
+    # audio files sent as an attachment, not a live recording
+    "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/wav": "wav", "audio/ogg": "ogg",
+}
+ATTACHMENT_SIGNED_URL_TTL_SECONDS = 3600
+
 # Storage lifecycle for voice notes — one of TWO layers, both aimed
 # at the same 5-day cutoff:
 #   1. THIS lazy path — piggybacks on opening a thread (this
@@ -686,6 +710,89 @@ def get_voice_url(conversation_id, message_id):
     if sign_status >= 400:
         return jsonify({"error": "could not load voice note"}), sign_status
     return jsonify({"url": signed["url"], "expires_in": VOICE_SIGNED_URL_TTL_SECONDS}), 200
+
+
+@bp.post("/<conversation_id>/messages/attachment")
+@require_auth
+@limiter.limit("60 per hour")  # same cost profile as voice notes — real storage on every send
+def send_attachment_message(conversation_id):
+    """Uploads an image, document, or audio file straight to the
+    private `message-attachments` bucket (path
+    "{conversation_id}/{uuid}.{ext}") and creates the message row in
+    one call. Same RLS-gated, no-service-role pattern as
+    send_voice_message above — the caller's own JWT is what the
+    storage write actually runs as, so message_attachments_migration.
+    sql's participant-only policy is what enforces this can't be
+    uploaded into a conversation the caller isn't part of.
+
+    type is derived server-side from the upload's real content-type,
+    never trusted from the client: 'image' for anything image/*, 'file'
+    for everything else this endpoint accepts (documents and audio
+    files sent as attachments — separate from the live-recorded 'voice'
+    type above)."""
+    if "file" not in request.files:
+        return jsonify({"error": "attach a file under the 'file' field"}), 400
+
+    file = request.files["file"]
+    content_type = (file.mimetype or "").split(";")[0].strip()
+    extension = ALLOWED_ATTACHMENT_CONTENT_TYPES.get(content_type)
+    if not extension:
+        return jsonify({"error": "unsupported file type"}), 400
+
+    file_bytes = file.read()
+    if not file_bytes:
+        return jsonify({"error": "file is empty"}), 400
+    if len(file_bytes) > MAX_ATTACHMENT_BYTES:
+        return jsonify({"error": "file is too large (max 25MB)"}), 400
+
+    original_name = (file.filename or f"attachment.{extension}").strip()[:200]
+    msg_type = "image" if content_type.startswith("image/") else "file"
+    path = f"{conversation_id}/{uuid.uuid4().hex}.{extension}"
+
+    upload_data, status = storage_upload_private("message-attachments", path, file_bytes, content_type, g.token)
+    if status >= 400:
+        return jsonify({"error": "upload failed, try again"}), status
+
+    data, status = rest_request(
+        "POST", "messages", token=g.token,
+        json_body={
+            "conversation_id": conversation_id, "sender_id": g.user_id,
+            "type": msg_type,
+            # doubles as the Inbox list preview text, same convention
+            # as the sticker/voice placeholders above.
+            "content": "Sent a photo" if msg_type == "image" else f"Sent a file: {original_name}",
+            "attachment_path": upload_data["path"], "attachment_name": original_name,
+            "attachment_mime": content_type, "attachment_size": len(file_bytes),
+        },
+        prefer="return=representation",
+    )
+    if status >= 400:
+        return jsonify({"error": "you need to accept this conversation before replying"}), status
+    return jsonify(data[0] if isinstance(data, list) else data), 201
+
+
+@bp.get("/<conversation_id>/messages/<message_id>/attachment-url")
+@require_auth
+def get_attachment_url(conversation_id, message_id):
+    """Signs a short-lived download/view URL for an image or file
+    attachment. Same participant-only gate as get_voice_url above,
+    via messages_select_own RLS on the initial row fetch."""
+    data, status = rest_request(
+        "GET", "messages", token=g.token,
+        params={"id": f"eq.{message_id}", "conversation_id": f"eq.{conversation_id}", "select": "attachment_path,type"},
+    )
+    if status != 200 or not data:
+        return jsonify({"error": "attachment not found"}), 404
+    row = data[0]
+    if row.get("type") not in ("image", "file") or not row.get("attachment_path"):
+        return jsonify({"error": "this message has no attachment"}), 400
+
+    signed, sign_status = storage_create_signed_url(
+        "message-attachments", row["attachment_path"], g.token, ATTACHMENT_SIGNED_URL_TTL_SECONDS,
+    )
+    if sign_status >= 400:
+        return jsonify({"error": "could not load attachment"}), sign_status
+    return jsonify({"url": signed["url"], "expires_in": ATTACHMENT_SIGNED_URL_TTL_SECONDS}), 200
 
 
 @bp.post("/<conversation_id>/messages/delivered")

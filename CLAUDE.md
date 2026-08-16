@@ -24,6 +24,11 @@ These rules apply to every AI coding assistant working in this repository
 A change that violates these rules is a failed change, even if the
 requested feature technically works.
 
+WARNING: THIS IS THE TIME CAMPUSMEET HAS GOT A BETTER SCREEN FOR DESKTOP
+AND MOBILE. BE INFORMED NOT TO MISTAKENLY TOUCH ANYTIME RELATING TO SCREEN
+UNTIL YOU ARE IVEN PERMIT OR ORDER BY MAKAVELI X
+
+
 ## 1. Scope discipline
 
 - Touch only the files and lines required to satisfy the specific request.

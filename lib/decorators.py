@@ -128,6 +128,20 @@ def require_admin(fn):
     return wrapper
 
 
+def is_owner_user(token, user_id):
+    """Non-aborting counterpart to @require_owner, for routes that need
+    an inline owner check on only part of their logic (set_role: owner
+    only for the admin tier specifically, any admin for moderator).
+    Deliberately duplicates @require_owner's query rather than
+    refactoring that decorator to call this — it already works, and
+    reshaping it isn't needed to add this."""
+    profile, status = rest_request(
+        "GET", "users", token=token,
+        params={"id": f"eq.{user_id}", "select": "is_owner"},
+    )
+    return status == 200 and bool(profile) and bool(profile[0].get("is_owner"))
+
+
 def require_owner(fn):
     """Strictly is_owner = true — not role-based at all, deliberately
     separate from require_admin/require_staff. Every team admin still

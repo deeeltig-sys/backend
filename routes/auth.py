@@ -54,6 +54,13 @@ def signup():
 @bp.post("/login")
 @limiter.limit("10 per minute")
 def login():
+    """The per-IP limit above (10/minute) stops one machine hammering
+    this endpoint, but not a distributed attempt — many IPs, a few
+    requests each, same target account — which never crosses any
+    single IP's threshold. check_login_lockout/record_login_failure/
+    record_login_success (db/login_lockout_migration.sql) track
+    failures against the EMAIL instead, closing that gap. Locks after
+    5 failures, for 15 minutes."""
     body = request.get_json(silent=True) or {}
     email = (body.get("email") or "").strip().lower()
     password = body.get("password") or ""
@@ -61,9 +68,17 @@ def login():
     if not email or not password:
         return jsonify({"error": "email and password are required"}), 400
 
+    retry_after, rstatus = rpc("check_login_lockout", payload={"p_email": email})
+    if rstatus < 400 and isinstance(retry_after, int) and retry_after > 0:
+        minutes = max(1, retry_after // 60)
+        return jsonify({"error": f"too many failed attempts — try again in {minutes} minute{'s' if minutes != 1 else ''}"}), 423
+
     data, status = auth_login(email, password)
     if status >= 400:
+        rpc("record_login_failure", payload={"p_email": email})
         return jsonify({"error": "invalid email or password"}), 401
+
+    rpc("record_login_success", payload={"p_email": email})
     return jsonify(data), 200
 
 
