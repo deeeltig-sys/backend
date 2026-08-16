@@ -20,7 +20,7 @@ tools actually sent in.
 
 import io
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 try:
     import pillow_heif
@@ -31,6 +31,27 @@ except ImportError:
     # same "could not read this image" error as any other bad file,
     # not a crash.
     pass
+
+# A feed card never renders wider than a few hundred px on screen, but
+# a straight-off-the-phone photo is routinely 3000-4000px wide. Before
+# this cap, every upload was stored and served at its original
+# resolution — every viewer's feed request downloaded that full-size
+# original, which is what was driving the multi-megabyte, slow feed
+# loads. 1600px is comfortably above what any card, lightbox, or
+# retina display on this platform actually needs; nothing downstream
+# renders an image anywhere near that large.
+MAX_DIMENSION = 1600
+
+
+def _resize_if_needed(image: Image.Image) -> Image.Image:
+    """Downscales in place if either dimension exceeds MAX_DIMENSION,
+    preserving aspect ratio. Never upscales a smaller image — a
+    500x500 avatar stays 500x500, this only ever makes large images
+    smaller."""
+    if image.width <= MAX_DIMENSION and image.height <= MAX_DIMENSION:
+        return image
+    image.thumbnail((MAX_DIMENSION, MAX_DIMENSION), Image.Resampling.LANCZOS)
+    return image
 
 
 class UnsupportedImageError(ValueError):
@@ -56,6 +77,14 @@ def normalize_image(file_bytes: bytes) -> tuple[bytes, str, str]:
     except (UnidentifiedImageError, OSError) as exc:
         raise UnsupportedImageError("could not read this image — try a different photo") from exc
 
+    # Phones write rotation as an EXIF tag rather than actually
+    # rotating the pixel data — ignoring it is why a portrait photo
+    # can come out sideways once re-encoded. exif_transpose bakes the
+    # rotation into the pixels themselves and strips the tag, since
+    # nothing downstream (watermarking, thumbnails, <img> rendering)
+    # reads EXIF orientation on its own.
+    image = ImageOps.exif_transpose(image)
+
     has_alpha = image.mode in ("RGBA", "LA") or (
         image.mode == "P" and "transparency" in image.info
     )
@@ -63,9 +92,12 @@ def normalize_image(file_bytes: bytes) -> tuple[bytes, str, str]:
     out = io.BytesIO()
     if has_alpha:
         image = image.convert("RGBA")
-        image.save(out, format="PNG")
+        image = _resize_if_needed(image)
+        image.save(out, format="PNG", optimize=True)
         return out.getvalue(), "image/png", "png"
 
     image = image.convert("RGB")
-    image.save(out, format="JPEG", quality=90)
+    image = _resize_if_needed(image)
+    image.save(out, format="JPEG", quality=90, optimize=True)
     return out.getvalue(), "image/jpeg", "jpg"
+
