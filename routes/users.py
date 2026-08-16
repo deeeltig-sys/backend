@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request
 from lib.decorators import require_auth
+from lib.pagination import paginate_args
 from models.user import public_user_fields
 
 bp = Blueprint("users", __name__, url_prefix="/api/users")
@@ -18,7 +19,7 @@ def search_users():
     if len(query) < 2:
         return jsonify({"error": "type at least 2 characters to search"}), 400
 
-    limit = request.args.get("limit", 20)
+    limit, _ = paginate_args(default_limit=20, max_limit=50)
     data, status = rest_request(
         "GET", "users",
         params={

@@ -3,6 +3,7 @@ import uuid
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, rpc, storage_upload
 from lib.decorators import require_auth, optional_auth
+from lib.pagination import paginate_args
 from lib.watermark import apply_watermark
 from lib.image_processing import normalize_image, UnsupportedImageError
 from models.post import validate_post_content
@@ -288,8 +289,7 @@ def feed():
     'national' shows everyone, unscoped — an explicit opt-in via the
     toggle in Feed.jsx. Unauthenticated requests can't be scoped to a
     campus we don't know, so they always get 'national'."""
-    limit = request.args.get("limit", 30)
-    offset = request.args.get("offset", 0)
+    limit, offset = paginate_args(default_limit=30, max_limit=60)
     scope = request.args.get("scope", "campus")
     # A fresh seed if the frontend didn't send one back (first load of
     # a session) — reused as-is on every subsequent paginated request
@@ -417,7 +417,7 @@ def search_posts():
     if len(query) < 2:
         return jsonify({"error": "type at least 2 characters to search"}), 400
 
-    limit = request.args.get("limit", 30)
+    limit, _ = paginate_args(default_limit=30, max_limit=60)
     data, status = rest_request(
         "GET", "feed",
         params={"select": "*", "content": f"ilike.*{query}*", "limit": limit},
@@ -698,8 +698,7 @@ def posts_by_user(user_id):
     newest first. Reuses the same `feed` view as the main feed (so
     blocking rules and author info stay consistent), just filtered
     to one author_id instead of ranked across everyone."""
-    limit = request.args.get("limit", 60)
-    offset = request.args.get("offset", 0)
+    limit, offset = paginate_args(default_limit=60, max_limit=100)
     data, status = rest_request(
         "GET", "feed",
         params={

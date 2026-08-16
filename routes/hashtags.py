@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request
 from lib.decorators import optional_auth
+from lib.pagination import paginate_args
 from routes.posts import (
     _filter_blocked,
     _filter_by_audience,
@@ -26,7 +27,7 @@ def trending():
     """Backs the Explore/Search empty-state — tags with the most posts
     in the last 7 days, most active first. See db/hashtags_migration.sql
     for how `trending_hashtags` is computed."""
-    limit = request.args.get("limit", 20)
+    limit, _ = paginate_args(default_limit=20, max_limit=50)
     data, status = rest_request(
         "GET", "trending_hashtags",
         params={"select": "tag,post_count,recent_count", "limit": limit},
@@ -55,7 +56,7 @@ def posts_for_hashtag(tag):
     if not hashtag:
         return jsonify({"tag": clean, "post_count": 0, "posts": []}), 200
 
-    limit = request.args.get("limit", 50)
+    limit, _ = paginate_args(default_limit=50, max_limit=100)
     links, lstatus = rest_request(
         "GET", "post_hashtags",
         params={

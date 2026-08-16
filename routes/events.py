@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request
 from lib.decorators import require_auth, optional_auth
+from lib.pagination import paginate_args
 
 bp = Blueprint("events", __name__, url_prefix="/api/events")
 
@@ -30,8 +31,7 @@ def list_events():
     """Upcoming events only (start_at in the future), soonest first —
     same "don't drown a new campus in a global list" scoping as posts
     and groups when signed in."""
-    limit = request.args.get("limit", 30)
-    offset = request.args.get("offset", 0)
+    limit, offset = paginate_args(default_limit=30, max_limit=60)
     group_id = request.args.get("group_id")
 
     params = {

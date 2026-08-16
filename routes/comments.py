@@ -12,10 +12,38 @@ Simply replace your existing routes/comments.py with this file.
 
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request
-from lib.decorators import require_auth
+from lib.decorators import require_auth, optional_auth
 from models.comment import validate_comment_content
+from routes.friends import _friend_ids
 
 bp = Blueprint("comments", __name__, url_prefix="/api/posts/<post_id>/comments")
+
+
+def _can_view_post(post_id: str, viewer_id, token) -> bool:
+    """A post's audience restriction ('friends'-only) is enforced by
+    _filter_by_audience wherever posts are listed (feed, search,
+    profile grid, single-post GET) — but this route reads comments by
+    post_id directly, with no awareness of the post they belong to.
+    That meant a friends-only post was correctly hidden everywhere
+    else, but its comments were readable by anyone who had or guessed
+    the post_id, RLS-only ('active' status is the only comments_select
+    check). Same check as posts.py's _filter_by_audience, applied
+    here so comments inherit their post's audience instead of
+    silently ignoring it."""
+    post, status = rest_request(
+        "GET", "posts", token=token,
+        params={"id": f"eq.{post_id}", "select": "audience,author_id"},
+    )
+    if status != 200 or not post:
+        return False
+    post = post[0]
+    if post.get("audience") != "friends":
+        return True
+    if post.get("author_id") == viewer_id:
+        return True
+    if not viewer_id:
+        return False
+    return post["author_id"] in set(_friend_ids(viewer_id, token))
 
 
 def _flatten_author(row: dict) -> dict:
@@ -31,6 +59,7 @@ def _flatten_author(row: dict) -> dict:
 
 
 @bp.get("")
+@optional_auth
 def list_comments(post_id):
     """Load comments as a nested thread structure.
     
@@ -61,6 +90,9 @@ def list_comments(post_id):
       ...
     ]
     """
+    if not _can_view_post(post_id, g.user_id, g.token):
+        return jsonify({"error": "post not found"}), 404
+
     # 1. Fetch top-level comments (no parent)
     top_level, status = rest_request(
         "GET", "comments",

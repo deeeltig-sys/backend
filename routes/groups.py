@@ -3,6 +3,7 @@ import uuid
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, storage_upload
 from lib.decorators import require_auth, optional_auth
+from lib.pagination import paginate_args
 from lib.image_processing import normalize_image, UnsupportedImageError
 from routes.posts import (
     _filter_blocked,
@@ -60,8 +61,7 @@ def list_groups():
     university when signed in (same reasoning as the campus/national
     toggle on the main post feed: a brand-new university shouldn't
     see itself drowned out by whichever campus onboarded first)."""
-    limit = request.args.get("limit", 30)
-    offset = request.args.get("offset", 0)
+    limit, offset = paginate_args(default_limit=30, max_limit=60)
     params = {"select": "*", "order": "member_count.desc", "limit": limit, "offset": offset}
 
     if g.user_id:
@@ -197,9 +197,17 @@ def leave_group(group_id):
 
 
 @bp.get("/<group_id>/members")
+@optional_auth
 def group_members(group_id):
+    """Was missing an auth decorator entirely, so every call ran on
+    the anon key — meaning auth.uid() was never set for the RLS check
+    below, and (combined with a stale `using (true)` policy on
+    group_members) private-group membership was readable by anyone.
+    Passing the caller's own token now lets group_members_select
+    correctly evaluate who's asking."""
     memberships, status = rest_request(
-        "GET", "group_members", params={"group_id": f"eq.{group_id}", "select": "user_id,role,joined_at", "order": "joined_at.asc"},
+        "GET", "group_members", token=g.token,
+        params={"group_id": f"eq.{group_id}", "select": "user_id,role,joined_at", "order": "joined_at.asc"},
     )
     if status != 200:
         return jsonify({"error": "could not load members"}), status
@@ -231,8 +239,7 @@ def group_posts(group_id):
     now one of its explicit columns, see db/groups_migration.sql) so
     a group post gets identical author info, reactions, reposts, and
     poll rendering to every other post in the app."""
-    limit = request.args.get("limit", 30)
-    offset = request.args.get("offset", 0)
+    limit, offset = paginate_args(default_limit=30, max_limit=60)
     data, status = rest_request(
         "GET", "feed",
         params={
