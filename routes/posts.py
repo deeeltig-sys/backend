@@ -122,7 +122,12 @@ def upload_image():
 
     data, status = storage_upload("post-images", path, file_bytes, content_type, g.token)
     if status >= 400:
-        return jsonify({"error": "image upload failed, try again"}), status
+        # Same fix as statuses.py's upload_status_image — was hiding
+        # Supabase Storage's actual error text behind a generic
+        # message, making any real failure here undiagnosable from
+        # the browser alone.
+        detail = (data or {}).get("message") or (data or {}).get("error") or str(data)
+        return jsonify({"error": f"image upload failed: {detail}"}), status
 
     return jsonify({"url": data["url"]}), 201
 

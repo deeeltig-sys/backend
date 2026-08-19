@@ -36,7 +36,14 @@ def upload_status_image():
 
     data, status = storage_upload("post-images", path, file_bytes, content_type, g.token)
     if status >= 400:
-        return jsonify({"error": "image upload failed, try again"}), status
+        # Was swallowing Supabase Storage's actual error text and
+        # returning a generic message — made this exact bug
+        # undiagnosable from the browser's Network tab alone. Surfacing
+        # the real reason (RLS violation, path conflict, size limit,
+        # whatever it turns out to be) so a failed upload is actually
+        # debuggable without needing server log access every time.
+        detail = (data or {}).get("message") or (data or {}).get("error") or str(data)
+        return jsonify({"error": f"image upload failed: {detail}"}), status
     return jsonify({"url": data["url"]}), 201
 
 
