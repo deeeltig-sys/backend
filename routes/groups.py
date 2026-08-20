@@ -4,7 +4,7 @@ from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, storage_upload
 from lib.decorators import require_auth, optional_auth
 from lib.pagination import paginate_args
-from lib.image_processing import normalize_image, UnsupportedImageError
+from lib.image_processing import normalize_image, UnsupportedImageError, AVATAR_MAX_DIMENSION
 from routes.posts import (
     _filter_blocked,
     _filter_by_audience,
@@ -342,7 +342,7 @@ def upload_group_avatar(group_id):
         return jsonify({"error": "image must be under 4MB"}), 400
 
     try:
-        file_bytes, content_type, extension = normalize_image(file_bytes)
+        file_bytes, content_type, extension = normalize_image(file_bytes, max_dimension=AVATAR_MAX_DIMENSION)
     except UnsupportedImageError as exc:
         return jsonify({"error": str(exc)}), 400
 

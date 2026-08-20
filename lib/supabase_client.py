@@ -17,7 +17,7 @@ from config import Config
 REQUEST_TIMEOUT = 15
 
 
-def _headers(token: str | None = None, prefer: str | None = None, content_type: str = "application/json") -> dict:
+def _headers(token: str | None = None, prefer: str | None = None, content_type: str = "application/json", cache_control: str | None = None) -> dict:
     headers = {
         "apikey": Config.SUPABASE_ANON_KEY,
         "Authorization": f"Bearer {token or Config.SUPABASE_ANON_KEY}",
@@ -25,6 +25,12 @@ def _headers(token: str | None = None, prefer: str | None = None, content_type: 
     }
     if prefer:
         headers["Prefer"] = prefer
+    if cache_control:
+        # Supabase Storage reads this off the upload request itself
+        # and stores it as the object's own Cache-Control metadata —
+        # it's what every subsequent GET on this object serves back
+        # to browsers/CDN, not just a header on this one request.
+        headers["cache-control"] = cache_control
     return headers
 
 
@@ -219,11 +225,26 @@ def auth_delete_self(token: str):
 # whether the write is allowed, not this function.
 # ---------------------------------------------------------------
 
-def storage_upload(bucket: str, path: str, file_bytes: bytes, content_type: str, token: str):
+def storage_upload(bucket: str, path: str, file_bytes: bytes, content_type: str, token: str, cache_control: str = "public, max-age=31536000, immutable"):
+    """Uploads to a public bucket. `cache_control` defaults to a full
+    year, marked immutable — safe because every caller of this
+    function already produces content-addressed paths: post/status
+    images get a fresh uuid4 filename that's never reused, and avatar
+    URLs carry a `?v=<random>` cache-buster generated fresh on every
+    re-upload (see routes/profile.py). Nothing that calls this ever
+    overwrites the same URL with different bytes, so there's no
+    staleness risk from caching this aggressively.
+    Supabase's own default here is a 1-hour cache — far too short for
+    a feed people scroll repeatedly all day. That gap was quietly the
+    single biggest lever on egress: every image was being re-fetched
+    from origin (counted against quota) roughly hourly per viewer,
+    compounding across every user regardless of file size. This is
+    the fix that stops it from ever creeping back, on top of the
+    one-time backfill for images already in storage."""
     url = f"{Config.SUPABASE_URL}/storage/v1/object/{bucket}/{path}"
     response = requests.put(
         url,
-        headers=_headers(token, content_type=content_type),
+        headers=_headers(token, content_type=content_type, cache_control=cache_control),
         data=file_bytes,
         timeout=REQUEST_TIMEOUT,
     )

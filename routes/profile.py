@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, g
 from lib.supabase_client import rest_request, storage_upload
 from lib.decorators import require_auth, optional_auth
-from lib.image_processing import normalize_image, UnsupportedImageError
+from lib.image_processing import normalize_image, UnsupportedImageError, AVATAR_MAX_DIMENSION
 from models.user import sanitize_social_links, sanitize_bio, sanitize_level_of_study, sanitize_full_name, public_user_fields
 
 bp = Blueprint("profile", __name__, url_prefix="/api/profile")
@@ -62,7 +62,7 @@ def upload_avatar():
         return jsonify({"error": "image must be under 4MB"}), 400
 
     try:
-        file_bytes, content_type, extension = normalize_image(file_bytes)
+        file_bytes, content_type, extension = normalize_image(file_bytes, max_dimension=AVATAR_MAX_DIMENSION)
     except UnsupportedImageError as exc:
         return jsonify({"error": str(exc)}), 400
 

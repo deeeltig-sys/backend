@@ -39,18 +39,32 @@ except ImportError:
 # original, which is what was driving the multi-megabyte, slow feed
 # loads. 1600px is comfortably above what any card, lightbox, or
 # retina display on this platform actually needs; nothing downstream
-# renders an image anywhere near that large.
+# renders an image anywhere near that large. This is the default for
+# post/status images — avatars pass their own much smaller cap (see
+# AVATAR_MAX_DIMENSION below), since a circular avatar never renders
+# above 88px anywhere in this app.
 MAX_DIMENSION = 1600
 
+# The largest an avatar is ever actually displayed at is 88px (Profile
+# page header) — everywhere else it's 72px or smaller. 400px gives
+# generous headroom for retina/high-DPI displays (4.5x the largest
+# real usage) while still being roughly 16x smaller in area than
+# letting avatars through the same 1600px cap as full feed photos.
+# Avatars are viewed constantly (every post, comment, message thread),
+# so this was a quiet, compounding source of wasted storage and
+# egress before this existed — every avatar was being stored and
+# served at up to 1600px for something never shown above 88px.
+AVATAR_MAX_DIMENSION = 400
 
-def _resize_if_needed(image: Image.Image) -> Image.Image:
-    """Downscales in place if either dimension exceeds MAX_DIMENSION,
+
+def _resize_if_needed(image: Image.Image, max_dimension: int = MAX_DIMENSION) -> Image.Image:
+    """Downscales in place if either dimension exceeds max_dimension,
     preserving aspect ratio. Never upscales a smaller image — a
-    500x500 avatar stays 500x500, this only ever makes large images
+    300x300 avatar stays 300x300, this only ever makes large images
     smaller."""
-    if image.width <= MAX_DIMENSION and image.height <= MAX_DIMENSION:
+    if image.width <= max_dimension and image.height <= max_dimension:
         return image
-    image.thumbnail((MAX_DIMENSION, MAX_DIMENSION), Image.Resampling.LANCZOS)
+    image.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
     return image
 
 
@@ -60,8 +74,13 @@ class UnsupportedImageError(ValueError):
     format not covered by Pillow + pillow-heif."""
 
 
-def normalize_image(file_bytes: bytes) -> tuple[bytes, str, str]:
+def normalize_image(file_bytes: bytes, max_dimension: int = MAX_DIMENSION) -> tuple[bytes, str, str]:
     """Returns (normalized_bytes, content_type, extension).
+
+    `max_dimension` lets callers that only ever display an image small
+    (avatars, group avatars) opt into a much tighter cap than the
+    default — pass AVATAR_MAX_DIMENSION for those. Post/status images
+    keep the default 1600px since they're shown at full feed width.
 
     Animated formats (GIF, animated WEBP) are flattened to their first
     frame — this platform shows posts/statuses/avatars as static
@@ -92,12 +111,12 @@ def normalize_image(file_bytes: bytes) -> tuple[bytes, str, str]:
     out = io.BytesIO()
     if has_alpha:
         image = image.convert("RGBA")
-        image = _resize_if_needed(image)
+        image = _resize_if_needed(image, max_dimension)
         image.save(out, format="PNG", optimize=True)
         return out.getvalue(), "image/png", "png"
 
     image = image.convert("RGB")
-    image = _resize_if_needed(image)
+    image = _resize_if_needed(image, max_dimension)
     image.save(out, format="JPEG", quality=90, optimize=True)
     return out.getvalue(), "image/jpeg", "jpg"
 
